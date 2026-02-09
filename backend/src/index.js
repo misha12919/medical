@@ -187,6 +187,33 @@ app.get("/calls/my", authenticate, requireRole("WORKER"), async (req, res) => {
   }
 });
 
+app.get("/calls/:id", authenticate, async (req, res) => {
+  try {
+    const callId = parsePositiveInt(req.params.id);
+    if (!callId) {
+      return res.status(400).json({ error: "Invalid call id" });
+    }
+
+    const call = await prisma.call.findUnique({
+      where: { id: callId },
+      include: { assignedWorker: true },
+    });
+
+    if (!call) {
+      return res.status(404).json({ error: "Call not found" });
+    }
+
+    if (req.user.role === "WORKER" && call.assignedWorkerId !== req.user.userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    res.json(call);
+  } catch (error) {
+    console.error("GET /calls/:id error", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 app.post("/calls", authenticate, requireRole("ADMIN"), async (req, res) => {
   try {
     const { fullName, address, age, diagnosis, assignedWorkerId } = req.body;
@@ -232,10 +259,73 @@ app.post("/calls", authenticate, requireRole("ADMIN"), async (req, res) => {
   }
 });
 
+app.patch("/calls/:id", authenticate, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const callId = parsePositiveInt(req.params.id);
+    const { fullName, address, age, diagnosis, assignedWorkerId } = req.body;
+
+    if (!callId) {
+      return res.status(400).json({ error: "Invalid call id" });
+    }
+
+    if (
+      !isNonEmptyString(fullName) ||
+      !isNonEmptyString(address) ||
+      !isNonEmptyString(diagnosis)
+    ) {
+      return res.status(400).json({ error: "Invalid text fields" });
+    }
+
+    const parsedAge = parsePositiveInt(age);
+    const parsedWorkerId = parsePositiveInt(assignedWorkerId);
+
+    if (!parsedAge || !parsedWorkerId) {
+      return res.status(400).json({ error: "Invalid age or worker" });
+    }
+
+    const existingCall = await prisma.call.findUnique({
+      where: { id: callId },
+    });
+
+    if (!existingCall) {
+      return res.status(404).json({ error: "Call not found" });
+    }
+
+    // Calls in final status cannot be edited
+    if (existingCall.status !== "NEW") {
+      return res.status(400).json({ error: "Call already finalized" });
+    }
+
+    const worker = await prisma.user.findFirst({
+      where: { id: parsedWorkerId, role: "WORKER" },
+    });
+
+    if (!worker) {
+      return res.status(400).json({ error: "Worker not found" });
+    }
+
+    const updatedCall = await prisma.call.update({
+      where: { id: callId },
+      data: {
+        fullName: fullName.trim(),
+        address: address.trim(),
+        age: parsedAge,
+        diagnosis: diagnosis.trim(),
+        assignedWorkerId: parsedWorkerId,
+      },
+      include: { assignedWorker: true },
+    });
+
+    res.json(updatedCall);
+  } catch (error) {
+    console.error("PATCH /calls/:id error", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 app.patch(
   "/calls/:id/status",
   authenticate,
-  requireRole("WORKER"),
   async (req, res) => {
     try {
       const callId = parsePositiveInt(req.params.id);
@@ -245,7 +335,7 @@ app.patch(
         return res.status(400).json({ error: "Invalid call id" });
       }
 
-      if (status !== "COMPLETED" && status !== "REJECTED") {
+      if (status !== "COMPLETED" && status !== "CANCELLED") {
         return res.status(400).json({ error: "Invalid status" });
       }
 
@@ -257,10 +347,14 @@ app.patch(
         return res.status(404).json({ error: "Call not found" });
       }
 
-      if (existingCall.assignedWorkerId !== req.user.userId) {
+      if (
+        req.user.role === "WORKER" &&
+        existingCall.assignedWorkerId !== req.user.userId
+      ) {
         return res.status(403).json({ error: "Forbidden" });
       }
 
+      // Status is immutable after first change
       if (existingCall.status !== "NEW") {
         return res.status(400).json({ error: "Call already finalized" });
       }

@@ -27,7 +27,7 @@ const formatIso = (value) => {
 const statusLabels = {
   NEW: "Новый",
   COMPLETED: "Выполнен",
-  REJECTED: "Отклонён",
+  CANCELLED: "Отменён",
 };
 
 const readStoredAuth = () => {
@@ -249,6 +249,9 @@ const Dashboard = ({ auth, onLogout }) => {
   const [workers, setWorkers] = useState([]);
   const [calls, setCalls] = useState([]);
   const [formState, setFormState] = useState(defaultFormState);
+  const [selectedCall, setSelectedCall] = useState(null);
+  const [isCallLoading, setIsCallLoading] = useState(false);
+  const [callEditState, setCallEditState] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -357,9 +360,90 @@ const Dashboard = ({ auth, onLogout }) => {
       setCalls((prev) =>
         prev.map((call) => (call.id === payload.id ? payload : call))
       );
+      setSelectedCall((prev) => (prev?.id === payload.id ? payload : prev));
       setError("");
     } catch (updateError) {
       setError(updateError.message);
+    }
+  };
+
+  const openCall = async (callId) => {
+    // Fetch full call details for the modal card
+    setIsCallLoading(true);
+    try {
+      const response = await apiFetch(`/calls/${callId}`, {
+        token: auth.token,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось загрузить вызов");
+      }
+      setSelectedCall(payload);
+      setCallEditState({
+        fullName: payload.fullName,
+        address: payload.address,
+        age: payload.age,
+        diagnosis: payload.diagnosis,
+        assignedWorkerId: payload.assignedWorkerId,
+      });
+      setError("");
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setIsCallLoading(false);
+    }
+  };
+
+  const closeCall = () => {
+    setSelectedCall(null);
+    setCallEditState(null);
+  };
+
+  const handleCallEditChange = (event) => {
+    const { name, value } = event.target;
+    setCallEditState((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const saveCallEdits = async () => {
+    if (!selectedCall) return;
+    if (
+      !callEditState.fullName.trim() ||
+      !callEditState.address.trim() ||
+      !callEditState.diagnosis.trim() ||
+      Number(callEditState.age) <= 0 ||
+      Number(callEditState.assignedWorkerId) <= 0
+    ) {
+      setError("Заполните все поля корректно");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const response = await apiFetch(`/calls/${selectedCall.id}`, {
+        method: "PATCH",
+        token: auth.token,
+        body: JSON.stringify({
+          fullName: callEditState.fullName,
+          address: callEditState.address,
+          age: Number(callEditState.age),
+          diagnosis: callEditState.diagnosis,
+          assignedWorkerId: Number(callEditState.assignedWorkerId),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось сохранить изменения");
+      }
+
+      setCalls((prev) =>
+        prev.map((call) => (call.id === payload.id ? payload : call))
+      );
+      setSelectedCall(payload);
+      setError("");
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -472,7 +556,18 @@ const Dashboard = ({ auth, onLogout }) => {
             <div className="table-row empty">Вызовов пока нет</div>
           )}
           {calls.map((call) => (
-            <div key={call.id} className="table-row">
+            <div
+              key={call.id}
+              className="table-row clickable"
+              onClick={() => openCall(call.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  openCall(call.id);
+                }
+              }}
+            >
               <span>{call.fullName}</span>
               <span>{call.address}</span>
               <span>{call.age}</span>
@@ -484,32 +579,173 @@ const Dashboard = ({ auth, onLogout }) => {
               <span>{formatIso(call.createdAt)}</span>
               <span>{formatIso(call.statusUpdatedAt)}</span>
               <span className="actions">
-                {isWorker ? (
-                  <>
-                    <button
-                      type="button"
-                      disabled={call.status !== "NEW"}
-                      onClick={() => updateStatus(call.id, "COMPLETED")}
-                    >
-                      Выполнен
-                    </button>
-                    <button
-                      type="button"
-                      disabled={call.status !== "NEW"}
-                      onClick={() => updateStatus(call.id, "REJECTED")}
-                    >
-                      Отклонён
-                    </button>
-                  </>
-                ) : (
-                  <span>—</span>
-                )}
+                <button
+                  type="button"
+                  disabled={call.status !== "NEW"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    updateStatus(call.id, "COMPLETED");
+                  }}
+                >
+                  Выполнен
+                </button>
+                <button
+                  type="button"
+                  disabled={call.status !== "NEW"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    updateStatus(call.id, "CANCELLED");
+                  }}
+                >
+                  Отменён
+                </button>
               </span>
             </div>
           ))}
         </div>
         {error && !isAdmin && <p className="error">{error}</p>}
       </section>
+
+      {selectedCall && (
+        <div className="modal-backdrop" onClick={closeCall}>
+          <div
+            className="modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="modal-header">
+              <h2>Карточка вызова</h2>
+              <button type="button" onClick={closeCall}>
+                Закрыть
+              </button>
+            </header>
+            {isCallLoading ? (
+              <p>Загрузка...</p>
+            ) : (
+              <>
+                <div className="modal-grid">
+                  <div>
+                    <strong>ФИО:</strong> {selectedCall.fullName}
+                  </div>
+                  <div>
+                    <strong>Адрес:</strong> {selectedCall.address}
+                  </div>
+                  <div>
+                    <strong>Возраст:</strong> {selectedCall.age}
+                  </div>
+                  <div>
+                    <strong>Диагноз:</strong> {selectedCall.diagnosis}
+                  </div>
+                  <div>
+                    <strong>Работник:</strong>{" "}
+                    {selectedCall.assignedWorker?.fullName || "—"}
+                  </div>
+                  <div>
+                    <strong>Статус:</strong>{" "}
+                    {statusLabels[selectedCall.status] ||
+                      selectedCall.status}
+                  </div>
+                  <div>
+                    <strong>Создан:</strong> {formatIso(selectedCall.createdAt)}
+                  </div>
+                  <div>
+                    <strong>Статус изменён:</strong>{" "}
+                    {formatIso(selectedCall.statusUpdatedAt)}
+                  </div>
+                </div>
+
+                {selectedCall.status === "NEW" && (
+                  <div className="modal-actions">
+                    <button
+                      type="button"
+                      onClick={() => updateStatus(selectedCall.id, "COMPLETED")}
+                    >
+                      Выполнен
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateStatus(selectedCall.id, "CANCELLED")}
+                    >
+                      Отменён
+                    </button>
+                  </div>
+                )}
+
+                {isAdmin && selectedCall.status === "NEW" && callEditState && (
+                  <>
+                    <h3>Редактирование</h3>
+                    <form
+                      className="form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        saveCallEdits();
+                      }}
+                    >
+                      <label>
+                        ФИО пациента
+                        <input
+                          name="fullName"
+                          value={callEditState.fullName}
+                          onChange={handleCallEditChange}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Адрес
+                        <input
+                          name="address"
+                          value={callEditState.address}
+                          onChange={handleCallEditChange}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Возраст
+                        <input
+                          name="age"
+                          type="number"
+                          min="1"
+                          value={callEditState.age}
+                          onChange={handleCallEditChange}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Диагноз
+                        <input
+                          name="diagnosis"
+                          value={callEditState.diagnosis}
+                          onChange={handleCallEditChange}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Работник
+                        <select
+                          name="assignedWorkerId"
+                          value={callEditState.assignedWorkerId}
+                          onChange={handleCallEditChange}
+                          required
+                        >
+                          <option value="">Выберите работника</option>
+                          {workers.map((worker) => (
+                            <option key={worker.id} value={worker.id}>
+                              {worker.fullName}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button type="submit" disabled={isSubmitting}>
+                        {isSubmitting ? "Сохранение..." : "Сохранить"}
+                      </button>
+                    </form>
+                  </>
+                )}
+              </>
+            )}
+            {error && <p className="error">{error}</p>}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
