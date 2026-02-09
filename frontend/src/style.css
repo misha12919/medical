@@ -1,0 +1,164 @@
+:root {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  line-height: 1.4;
+  font-weight: 400;
+  color: #1f2933;
+  background-color: #f5f7fb;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px;
+}
+
+a {
+  color: #1d4ed8;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2 {
+  margin: 0 0 12px;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.header p {
+  margin: 0;
+  color: #52606d;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.card {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  align-items: end;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  color: #52606d;
+}
+
+input,
+select {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd2d9;
+  font-size: 14px;
+  background: #fff;
+}
+
+button {
+  border-radius: 8px;
+  border: none;
+  background: #1d4ed8;
+  color: #fff;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+button:disabled {
+  background: #9fb3c8;
+  cursor: not-allowed;
+}
+
+.error {
+  margin-top: 12px;
+  color: #b91c1c;
+}
+
+.helper {
+  margin-top: 12px;
+  color: #52606d;
+}
+
+.table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.table-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1.4fr 0.6fr 1.4fr 1fr 0.8fr 1.1fr 1.1fr 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.table-head {
+  font-weight: 600;
+  background: #e2e8f0;
+}
+
+.table-row.empty {
+  grid-template-columns: 1fr;
+  justify-content: center;
+  text-align: center;
+  color: #52606d;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.status {
+  text-transform: uppercase;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.status-new {
+  color: #1d4ed8;
+}
+
+.status-completed {
+  color: #15803d;
+}
+
+.status-rejected {
+  color: #b91c1c;
+}

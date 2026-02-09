@@ -1,0 +1,563 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useNavigate,
+} from "react-router-dom";
+
+const API_BASE_URL = "/api";
+const AUTH_STORAGE_KEY = "med_calls_auth";
+
+const defaultFormState = {
+  fullName: "",
+  address: "",
+  age: "",
+  diagnosis: "",
+  assignedWorkerId: "",
+};
+
+const formatIso = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toISOString();
+};
+
+const statusLabels = {
+  NEW: "Новый",
+  COMPLETED: "Выполнен",
+  REJECTED: "Отклонён",
+};
+
+const readStoredAuth = () => {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredAuth = (value) => {
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(value));
+};
+
+const clearStoredAuth = () => {
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+};
+
+const apiFetch = async (path, { token, ...options } = {}) => {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers,
+  });
+  return response;
+};
+
+const ProtectedRoute = ({ auth, children }) => {
+  if (!auth?.token) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
+};
+
+const AuthRedirect = ({ auth, children }) => {
+  if (auth?.token) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return children;
+};
+
+const LoginPage = ({ onAuth }) => {
+  const navigate = useNavigate();
+  const [form, setForm] = useState({ email: "", password: "" });
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleChange = (event) => {
+    const { name, value } = event.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setIsSubmitting(true);
+    setError("");
+    try {
+      const response = await apiFetch("/auth/login", {
+        method: "POST",
+        body: JSON.stringify(form),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось войти");
+      }
+      onAuth(payload);
+      navigate("/dashboard", { replace: true });
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="page">
+      <header className="header">
+        <h1>Вход</h1>
+        <p>Введите данные учетной записи.</p>
+      </header>
+      <section className="card">
+        <form className="form" onSubmit={handleSubmit}>
+          <label>
+            Email
+            <input
+              name="email"
+              type="email"
+              value={form.email}
+              onChange={handleChange}
+              required
+            />
+          </label>
+          <label>
+            Пароль
+            <input
+              name="password"
+              type="password"
+              value={form.password}
+              onChange={handleChange}
+              required
+            />
+          </label>
+          <button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? "Вход..." : "Войти"}
+          </button>
+        </form>
+        {error && <p className="error">{error}</p>}
+        <p className="helper">
+          Нет аккаунта? <Link to="/register">Зарегистрироваться</Link>
+        </p>
+      </section>
+    </div>
+  );
+};
+
+const RegisterPage = ({ onAuth }) => {
+  const navigate = useNavigate();
+  const [form, setForm] = useState({
+    fullName: "",
+    email: "",
+    password: "",
+    role: "ADMIN",
+  });
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleChange = (event) => {
+    const { name, value } = event.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setIsSubmitting(true);
+    setError("");
+    try {
+      const response = await apiFetch("/auth/register", {
+        method: "POST",
+        body: JSON.stringify(form),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось зарегистрироваться");
+      }
+      onAuth(payload);
+      navigate("/dashboard", { replace: true });
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="page">
+      <header className="header">
+        <h1>Регистрация</h1>
+        <p>Создайте учетную запись с нужной ролью.</p>
+      </header>
+      <section className="card">
+        <form className="form" onSubmit={handleSubmit}>
+          <label>
+            ФИО
+            <input
+              name="fullName"
+              value={form.fullName}
+              onChange={handleChange}
+              required
+            />
+          </label>
+          <label>
+            Email
+            <input
+              name="email"
+              type="email"
+              value={form.email}
+              onChange={handleChange}
+              required
+            />
+          </label>
+          <label>
+            Пароль
+            <input
+              name="password"
+              type="password"
+              value={form.password}
+              onChange={handleChange}
+              required
+            />
+          </label>
+          <label>
+            Роль
+            <select name="role" value={form.role} onChange={handleChange}>
+              <option value="ADMIN">Администратор</option>
+              <option value="WORKER">Работник</option>
+            </select>
+          </label>
+          <button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? "Создание..." : "Зарегистрироваться"}
+          </button>
+        </form>
+        {error && <p className="error">{error}</p>}
+        <p className="helper">
+          Уже есть аккаунт? <Link to="/login">Войти</Link>
+        </p>
+      </section>
+    </div>
+  );
+};
+
+const Dashboard = ({ auth, onLogout }) => {
+  const [workers, setWorkers] = useState([]);
+  const [calls, setCalls] = useState([]);
+  const [formState, setFormState] = useState(defaultFormState);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const isAdmin = auth.user.role === "ADMIN";
+  const isWorker = auth.user.role === "WORKER";
+
+  const isFormValid = useMemo(() => {
+    if (!isAdmin) return false;
+    return (
+      formState.fullName.trim() &&
+      formState.address.trim() &&
+      formState.diagnosis.trim() &&
+      Number(formState.age) > 0 &&
+      Number(formState.assignedWorkerId) > 0
+    );
+  }, [formState, isAdmin]);
+
+  const loadWorkers = async () => {
+    const response = await apiFetch("/workers", { token: auth.token });
+    if (!response.ok) {
+      throw new Error("Не удалось загрузить список работников");
+    }
+    return response.json();
+  };
+
+  const loadCalls = async () => {
+    const endpoint = isAdmin ? "/calls" : "/calls/my";
+    const response = await apiFetch(endpoint, { token: auth.token });
+    if (!response.ok) {
+      throw new Error("Не удалось загрузить список вызовов");
+    }
+    return response.json();
+  };
+
+  const refreshData = async () => {
+    try {
+      const [workersData, callsData] = await Promise.all([
+        isAdmin ? loadWorkers() : Promise.resolve([]),
+        loadCalls(),
+      ]);
+      setWorkers(workersData);
+      setCalls(callsData);
+      setError("");
+    } catch (loadError) {
+      setError(loadError.message);
+    }
+  };
+
+  useEffect(() => {
+    refreshData();
+  }, []);
+
+  const handleChange = (event) => {
+    const { name, value } = event.target;
+    setFormState((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    if (!isFormValid) {
+      setError("Заполните все поля корректно");
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError("");
+    try {
+      const response = await apiFetch("/calls", {
+        method: "POST",
+        token: auth.token,
+        body: JSON.stringify({
+          fullName: formState.fullName,
+          address: formState.address,
+          age: Number(formState.age),
+          diagnosis: formState.diagnosis,
+          assignedWorkerId: Number(formState.assignedWorkerId),
+        }),
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось создать вызов");
+      }
+
+      setFormState(defaultFormState);
+      await refreshData();
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const updateStatus = async (callId, status) => {
+    try {
+      const response = await apiFetch(`/calls/${callId}/status`, {
+        method: "PATCH",
+        token: auth.token,
+        body: JSON.stringify({ status }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось обновить статус");
+      }
+
+      setCalls((prev) =>
+        prev.map((call) => (call.id === payload.id ? payload : call))
+      );
+      setError("");
+    } catch (updateError) {
+      setError(updateError.message);
+    }
+  };
+
+  return (
+    <div className="page">
+      <header className="header">
+        <div className="header-row">
+          <div>
+            <h1>Личный кабинет</h1>
+            <p>
+              {auth.user.fullName} • {auth.user.role}
+            </p>
+          </div>
+          <button type="button" onClick={onLogout}>
+            Выйти
+          </button>
+        </div>
+        <p>
+          {isAdmin
+            ? "Управление всеми вызовами и назначениями."
+            : "Ваши назначенные вызовы."}
+        </p>
+      </header>
+
+      {isAdmin && (
+        <section className="card">
+          <h2>Создать вызов</h2>
+          <form className="form" onSubmit={handleSubmit}>
+            <label>
+              ФИО пациента
+              <input
+                name="fullName"
+                value={formState.fullName}
+                onChange={handleChange}
+                placeholder="Иванов Иван Иванович"
+                required
+              />
+            </label>
+            <label>
+              Адрес
+              <input
+                name="address"
+                value={formState.address}
+                onChange={handleChange}
+                placeholder="г. Москва, ул. Пример, 10"
+                required
+              />
+            </label>
+            <label>
+              Возраст
+              <input
+                name="age"
+                type="number"
+                min="1"
+                value={formState.age}
+                onChange={handleChange}
+                placeholder="45"
+                required
+              />
+            </label>
+            <label>
+              Диагноз
+              <input
+                name="diagnosis"
+                value={formState.diagnosis}
+                onChange={handleChange}
+                placeholder="Гипертонический криз"
+                required
+              />
+            </label>
+            <label>
+              Работник
+              <select
+                name="assignedWorkerId"
+                value={formState.assignedWorkerId}
+                onChange={handleChange}
+                required
+              >
+                <option value="">Выберите работника</option>
+                {workers.map((worker) => (
+                  <option key={worker.id} value={worker.id}>
+                    {worker.fullName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="submit" disabled={!isFormValid || isSubmitting}>
+              {isSubmitting ? "Создание..." : "Создать вызов"}
+            </button>
+          </form>
+          {error && <p className="error">{error}</p>}
+        </section>
+      )}
+
+      <section className="card">
+        <h2>{isAdmin ? "Все вызовы" : "Мои вызовы"}</h2>
+        <div className="table">
+          <div className="table-row table-head">
+            <span>ФИО</span>
+            <span>Адрес</span>
+            <span>Возраст</span>
+            <span>Диагноз</span>
+            <span>Работник</span>
+            <span>Статус</span>
+            <span>Создан</span>
+            <span>Статус изменён</span>
+            <span>Действия</span>
+          </div>
+          {calls.length === 0 && (
+            <div className="table-row empty">Вызовов пока нет</div>
+          )}
+          {calls.map((call) => (
+            <div key={call.id} className="table-row">
+              <span>{call.fullName}</span>
+              <span>{call.address}</span>
+              <span>{call.age}</span>
+              <span>{call.diagnosis}</span>
+              <span>{call.assignedWorker?.fullName || "—"}</span>
+              <span className={`status status-${call.status.toLowerCase()}`}>
+                {statusLabels[call.status] || call.status}
+              </span>
+              <span>{formatIso(call.createdAt)}</span>
+              <span>{formatIso(call.statusUpdatedAt)}</span>
+              <span className="actions">
+                {isWorker ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={call.status !== "NEW"}
+                      onClick={() => updateStatus(call.id, "COMPLETED")}
+                    >
+                      Выполнен
+                    </button>
+                    <button
+                      type="button"
+                      disabled={call.status !== "NEW"}
+                      onClick={() => updateStatus(call.id, "REJECTED")}
+                    >
+                      Отклонён
+                    </button>
+                  </>
+                ) : (
+                  <span>—</span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+        {error && !isAdmin && <p className="error">{error}</p>}
+      </section>
+    </div>
+  );
+};
+
+export default function App() {
+  const [auth, setAuth] = useState(() => readStoredAuth());
+
+  const handleAuth = (payload) => {
+    const authPayload = { token: payload.token, user: payload.user };
+    saveStoredAuth(authPayload);
+    setAuth(authPayload);
+  };
+
+  const handleLogout = () => {
+    clearStoredAuth();
+    setAuth(null);
+  };
+
+  return (
+    <Routes>
+      <Route
+        path="/"
+        element={<Navigate to={auth?.token ? "/dashboard" : "/login"} replace />}
+      />
+      <Route
+        path="/login"
+        element={
+          <AuthRedirect auth={auth}>
+            <LoginPage onAuth={handleAuth} />
+          </AuthRedirect>
+        }
+      />
+      <Route
+        path="/register"
+        element={
+          <AuthRedirect auth={auth}>
+            <RegisterPage onAuth={handleAuth} />
+          </AuthRedirect>
+        }
+      />
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute auth={auth}>
+            <Dashboard auth={auth} onLogout={handleLogout} />
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
+  );
+}

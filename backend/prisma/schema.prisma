@@ -1,0 +1,45 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  WORKER
+}
+
+enum CallStatus {
+  NEW
+  COMPLETED
+  REJECTED
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  fullName     String
+  email        String    @unique
+  passwordHash String
+  role         UserRole
+  createdAt    DateTime  @default(now())
+  calls        Call[]
+}
+
+model Call {
+  id               Int        @id @default(autoincrement())
+  fullName         String
+  address          String
+  age              Int
+  diagnosis        String
+  createdAt        DateTime   @default(now())
+  assignedWorkerId Int
+  assignedWorker   User       @relation(fields: [assignedWorkerId], references: [id])
+  status           CallStatus @default(NEW)
+  statusUpdatedAt  DateTime?
+}
