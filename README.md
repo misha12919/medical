@@ -53,8 +53,9 @@ UI будет доступен на `http://localhost:5173`.
 - `GET /calls` — получить все вызовы (ADMIN)
 - `GET /calls/my` — получить свои вызовы (WORKER)
 - `GET /calls/:id` — получить один вызов (ADMIN/WORKER)
-- `PATCH /calls/:id` — редактировать вызов (ADMIN, только статус NEW)
-- `PATCH /calls/:id/status` — изменить статус вызова (ADMIN/WORKER, COMPLETED/CANCELLED)
+- `PATCH /calls/:id` — редактировать вызов (ADMIN, любой статус)
+- `PATCH /calls/:id/status` — изменить статус вызова (ADMIN/WORKER, в любой момент)
+- `GET /calls/:id/history` — история изменений вызова (ADMIN/WORKER)
 
 Дата/время хранятся в ISO формате.
 

@@ -26,6 +26,35 @@ const parsePositiveInt = (value) => {
   return parsed;
 };
 
+const buildFieldChanges = (existingCall, nextValues) => {
+  const oldValue = {};
+  const newValue = {};
+
+  if (existingCall.fullName !== nextValues.fullName) {
+    oldValue.fullName = existingCall.fullName;
+    newValue.fullName = nextValues.fullName;
+  }
+  if (existingCall.address !== nextValues.address) {
+    oldValue.address = existingCall.address;
+    newValue.address = nextValues.address;
+  }
+  if (existingCall.age !== nextValues.age) {
+    oldValue.age = existingCall.age;
+    newValue.age = nextValues.age;
+  }
+  if (existingCall.diagnosis !== nextValues.diagnosis) {
+    oldValue.diagnosis = existingCall.diagnosis;
+    newValue.diagnosis = nextValues.diagnosis;
+  }
+  if (existingCall.assignedWorkerId !== nextValues.assignedWorkerId) {
+    oldValue.assignedWorkerId = existingCall.assignedWorkerId;
+    newValue.assignedWorkerId = nextValues.assignedWorkerId;
+  }
+
+  const hasChanges = Object.keys(newValue).length > 0;
+  return { hasChanges, oldValue, newValue };
+};
+
 const createToken = (user) =>
   jwt.sign(
     { userId: user.id, role: user.role },
@@ -241,15 +270,38 @@ app.post("/calls", authenticate, requireRole("ADMIN"), async (req, res) => {
       return res.status(400).json({ error: "Worker not found" });
     }
 
-    const createdCall = await prisma.call.create({
-      data: {
-        fullName: fullName.trim(),
-        address: address.trim(),
-        age: parsedAge,
-        diagnosis: diagnosis.trim(),
-        assignedWorkerId: parsedWorkerId,
-      },
-      include: { assignedWorker: true },
+    const createdCall = await prisma.$transaction(async (tx) => {
+      const call = await tx.call.create({
+        data: {
+          fullName: fullName.trim(),
+          address: address.trim(),
+          age: parsedAge,
+          diagnosis: diagnosis.trim(),
+          assignedWorkerId: parsedWorkerId,
+        },
+        include: { assignedWorker: true },
+      });
+
+      await tx.callHistory.create({
+        data: {
+          callId: call.id,
+          changedByUserId: req.user.userId,
+          actionType: "CREATE",
+          oldValue: null,
+          newValue: {
+            fullName: call.fullName,
+            address: call.address,
+            age: call.age,
+            diagnosis: call.diagnosis,
+            assignedWorkerId: call.assignedWorkerId,
+            status: call.status,
+            createdAt: call.createdAt,
+            statusUpdatedAt: call.statusUpdatedAt,
+          },
+        },
+      });
+
+      return call;
     });
 
     res.status(201).json(createdCall);
@@ -291,11 +343,6 @@ app.patch("/calls/:id", authenticate, requireRole("ADMIN"), async (req, res) => 
       return res.status(404).json({ error: "Call not found" });
     }
 
-    // Calls in final status cannot be edited
-    if (existingCall.status !== "NEW") {
-      return res.status(400).json({ error: "Call already finalized" });
-    }
-
     const worker = await prisma.user.findFirst({
       where: { id: parsedWorkerId, role: "WORKER" },
     });
@@ -304,16 +351,45 @@ app.patch("/calls/:id", authenticate, requireRole("ADMIN"), async (req, res) => 
       return res.status(400).json({ error: "Worker not found" });
     }
 
-    const updatedCall = await prisma.call.update({
-      where: { id: callId },
-      data: {
-        fullName: fullName.trim(),
-        address: address.trim(),
-        age: parsedAge,
-        diagnosis: diagnosis.trim(),
-        assignedWorkerId: parsedWorkerId,
-      },
-      include: { assignedWorker: true },
+    const nextValues = {
+      fullName: fullName.trim(),
+      address: address.trim(),
+      age: parsedAge,
+      diagnosis: diagnosis.trim(),
+      assignedWorkerId: parsedWorkerId,
+    };
+
+    const { hasChanges, oldValue, newValue } = buildFieldChanges(
+      existingCall,
+      nextValues
+    );
+
+    if (!hasChanges) {
+      const call = await prisma.call.findUnique({
+        where: { id: callId },
+        include: { assignedWorker: true },
+      });
+      return res.json(call);
+    }
+
+    const updatedCall = await prisma.$transaction(async (tx) => {
+      const call = await tx.call.update({
+        where: { id: callId },
+        data: nextValues,
+        include: { assignedWorker: true },
+      });
+
+      await tx.callHistory.create({
+        data: {
+          callId: call.id,
+          changedByUserId: req.user.userId,
+          actionType: "UPDATE_FIELDS",
+          oldValue,
+          newValue,
+        },
+      });
+
+      return call;
     });
 
     res.json(updatedCall);
@@ -354,18 +430,35 @@ app.patch(
         return res.status(403).json({ error: "Forbidden" });
       }
 
-      // Status is immutable after first change
-      if (existingCall.status !== "NEW") {
-        return res.status(400).json({ error: "Call already finalized" });
+      if (existingCall.status === status) {
+        const call = await prisma.call.findUnique({
+          where: { id: callId },
+          include: { assignedWorker: true },
+        });
+        return res.json(call);
       }
 
-      const updatedCall = await prisma.call.update({
-        where: { id: callId },
-        data: {
-          status,
-          statusUpdatedAt: new Date(),
-        },
-        include: { assignedWorker: true },
+      const updatedCall = await prisma.$transaction(async (tx) => {
+        const call = await tx.call.update({
+          where: { id: callId },
+          data: {
+            status,
+            statusUpdatedAt: new Date(),
+          },
+          include: { assignedWorker: true },
+        });
+
+        await tx.callHistory.create({
+          data: {
+            callId: call.id,
+            changedByUserId: req.user.userId,
+            actionType: "STATUS_CHANGE",
+            oldValue: { status: existingCall.status },
+            newValue: { status },
+          },
+        });
+
+        return call;
       });
 
       res.json(updatedCall);
@@ -375,6 +468,43 @@ app.patch(
     }
   }
 );
+
+app.get("/calls/:id/history", authenticate, async (req, res) => {
+  try {
+    const callId = parsePositiveInt(req.params.id);
+    if (!callId) {
+      return res.status(400).json({ error: "Invalid call id" });
+    }
+
+    const call = await prisma.call.findUnique({
+      where: { id: callId },
+      select: { id: true, assignedWorkerId: true },
+    });
+
+    if (!call) {
+      return res.status(404).json({ error: "Call not found" });
+    }
+
+    if (req.user.role === "WORKER" && call.assignedWorkerId !== req.user.userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const history = await prisma.callHistory.findMany({
+      where: { callId },
+      orderBy: { createdAt: "asc" },
+      include: {
+        changedByUser: {
+          select: { id: true, fullName: true, role: true },
+        },
+      },
+    });
+
+    res.json(history);
+  } catch (error) {
+    console.error("GET /calls/:id/history error", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`API server running on http://localhost:${PORT}`);

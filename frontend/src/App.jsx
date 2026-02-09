@@ -18,16 +18,35 @@ const defaultFormState = {
   assignedWorkerId: "",
 };
 
-const formatIso = (value) => {
+const formatTimeUtcPlus3 = (value) => {
   if (!value) return "";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toISOString();
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = 3 * 60 * 60 * 1000;
+  const adjusted = new Date(date.getTime() + offsetMs);
+  const hours = String(adjusted.getUTCHours()).padStart(2, "0");
+  const minutes = String(adjusted.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
 };
 
 const statusLabels = {
   NEW: "Новый",
   COMPLETED: "Выполнен",
   CANCELLED: "Отменён",
+};
+
+const actionLabels = {
+  CREATE: "Создание вызова",
+  UPDATE_FIELDS: "Редактирование данных",
+  STATUS_CHANGE: "Изменение статуса",
+};
+
+const fieldLabels = {
+  fullName: "ФИО",
+  address: "Адрес",
+  age: "Возраст",
+  diagnosis: "Диагноз",
+  assignedWorkerId: "Работник",
 };
 
 const readStoredAuth = () => {
@@ -252,6 +271,23 @@ const Dashboard = ({ auth, onLogout }) => {
   const [selectedCall, setSelectedCall] = useState(null);
   const [isCallLoading, setIsCallLoading] = useState(false);
   const [callEditState, setCallEditState] = useState(null);
+  const [callHistory, setCallHistory] = useState([]);
+  const [historyError, setHistoryError] = useState("");
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isCreateFormOpen, setIsCreateFormOpen] = useState(true);
+  const [showOnlyNew, setShowOnlyNew] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [filters, setFilters] = useState({
+    fullName: "",
+    address: "",
+    diagnosis: "",
+    workerId: "",
+    status: "",
+    ageMin: "",
+    ageMax: "",
+    createdAt: "",
+    statusUpdatedAt: "",
+  });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -268,6 +304,60 @@ const Dashboard = ({ auth, onLogout }) => {
       Number(formState.assignedWorkerId) > 0
     );
   }, [formState, isAdmin]);
+
+  const visibleCalls = useMemo(() => {
+    const normalized = calls.filter((call) =>
+      showOnlyNew ? call.status === "NEW" : true
+    );
+
+    return normalized.filter((call) => {
+      if (
+        filters.fullName &&
+        !call.fullName.toLowerCase().includes(filters.fullName.toLowerCase())
+      ) {
+        return false;
+      }
+      if (
+        filters.address &&
+        !call.address.toLowerCase().includes(filters.address.toLowerCase())
+      ) {
+        return false;
+      }
+      if (
+        filters.diagnosis &&
+        !call.diagnosis.toLowerCase().includes(filters.diagnosis.toLowerCase())
+      ) {
+        return false;
+      }
+      if (filters.workerId && Number(filters.workerId) !== call.assignedWorkerId) {
+        return false;
+      }
+      if (filters.status && filters.status !== call.status) {
+        return false;
+      }
+      if (filters.ageMin && call.age < Number(filters.ageMin)) {
+        return false;
+      }
+      if (filters.ageMax && call.age > Number(filters.ageMax)) {
+        return false;
+      }
+      if (
+        filters.createdAt &&
+        !formatTimeUtcPlus3(call.createdAt).includes(filters.createdAt)
+      ) {
+        return false;
+      }
+      if (
+        filters.statusUpdatedAt &&
+        !formatTimeUtcPlus3(call.statusUpdatedAt).includes(
+          filters.statusUpdatedAt
+        )
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [calls, filters, showOnlyNew]);
 
   const loadWorkers = async () => {
     const response = await apiFetch("/workers", { token: auth.token });
@@ -307,6 +397,25 @@ const Dashboard = ({ auth, onLogout }) => {
   const handleChange = (event) => {
     const { name, value } = event.target;
     setFormState((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleFilterChange = (event) => {
+    const { name, value } = event.target;
+    setFilters((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const resetFilters = () => {
+    setFilters({
+      fullName: "",
+      address: "",
+      diagnosis: "",
+      workerId: "",
+      status: "",
+      ageMin: "",
+      ageMax: "",
+      createdAt: "",
+      statusUpdatedAt: "",
+    });
   };
 
   const handleSubmit = async (event) => {
@@ -361,9 +470,28 @@ const Dashboard = ({ auth, onLogout }) => {
         prev.map((call) => (call.id === payload.id ? payload : call))
       );
       setSelectedCall((prev) => (prev?.id === payload.id ? payload : prev));
+      if (selectedCall?.id === callId) {
+        await loadHistory(callId);
+      }
       setError("");
     } catch (updateError) {
       setError(updateError.message);
+    }
+  };
+
+  const loadHistory = async (callId) => {
+    try {
+      const response = await apiFetch(`/calls/${callId}/history`, {
+        token: auth.token,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось загрузить историю");
+      }
+      setCallHistory(payload);
+      setHistoryError("");
+    } catch (loadError) {
+      setHistoryError(loadError.message);
     }
   };
 
@@ -386,6 +514,8 @@ const Dashboard = ({ auth, onLogout }) => {
         diagnosis: payload.diagnosis,
         assignedWorkerId: payload.assignedWorkerId,
       });
+      await loadHistory(callId);
+      setIsHistoryOpen(false);
       setError("");
     } catch (loadError) {
       setError(loadError.message);
@@ -397,6 +527,9 @@ const Dashboard = ({ auth, onLogout }) => {
   const closeCall = () => {
     setSelectedCall(null);
     setCallEditState(null);
+    setCallHistory([]);
+    setHistoryError("");
+    setIsHistoryOpen(false);
   };
 
   const handleCallEditChange = (event) => {
@@ -439,12 +572,43 @@ const Dashboard = ({ auth, onLogout }) => {
         prev.map((call) => (call.id === payload.id ? payload : call))
       );
       setSelectedCall(payload);
+      await loadHistory(payload.id);
       setError("");
     } catch (saveError) {
       setError(saveError.message);
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const describeHistoryEntry = (entry) => {
+    if (entry.actionType === "STATUS_CHANGE") {
+      const oldStatus = entry.oldValue?.status;
+      const newStatus = entry.newValue?.status;
+      return `Статус: ${statusLabels[oldStatus] || oldStatus} → ${
+        statusLabels[newStatus] || newStatus
+      }`;
+    }
+
+    if (entry.actionType === "UPDATE_FIELDS") {
+      const changedFields = Object.keys(entry.newValue || {});
+      if (changedFields.length === 0) return "Изменены данные вызова";
+      return changedFields
+        .map((field) => {
+          if (field === "assignedWorkerId") {
+            const newWorker = workers.find(
+              (worker) => worker.id === entry.newValue.assignedWorkerId
+            );
+            return newWorker
+              ? `Назначен работник: ${newWorker.fullName}`
+              : "Назначен другой работник";
+          }
+          return `${fieldLabels[field] || field} изменён`;
+        })
+        .join(", ");
+    }
+
+    return "Создание вызова";
   };
 
   return (
@@ -470,8 +634,17 @@ const Dashboard = ({ auth, onLogout }) => {
 
       {isAdmin && (
         <section className="card">
-          <h2>Создать вызов</h2>
-          <form className="form" onSubmit={handleSubmit}>
+          <div className="section-header">
+            <h2>Создать вызов</h2>
+            <button
+              type="button"
+              onClick={() => setIsCreateFormOpen((prev) => !prev)}
+            >
+              {isCreateFormOpen ? "Скрыть" : "Показать"}
+            </button>
+          </div>
+          {isCreateFormOpen && (
+            <form className="form" onSubmit={handleSubmit}>
             <label>
               ФИО пациента
               <input
@@ -533,13 +706,105 @@ const Dashboard = ({ auth, onLogout }) => {
             <button type="submit" disabled={!isFormValid || isSubmitting}>
               {isSubmitting ? "Создание..." : "Создать вызов"}
             </button>
-          </form>
+            </form>
+          )}
           {error && <p className="error">{error}</p>}
         </section>
       )}
 
       <section className="card">
-        <h2>{isAdmin ? "Все вызовы" : "Мои вызовы"}</h2>
+        <div className="section-header">
+          <h2>{isAdmin ? "Все вызовы" : "Мои вызовы"}</h2>
+          <div className="section-actions">
+            <button
+              type="button"
+              onClick={() => setShowOnlyNew((prev) => !prev)}
+            >
+              {showOnlyNew ? "Показать все" : "Только новые"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsFiltersOpen((prev) => !prev)}
+            >
+              {isFiltersOpen ? "Скрыть фильтры" : "Показать фильтры"}
+            </button>
+            <button type="button" onClick={resetFilters}>
+              Сбросить фильтры
+            </button>
+          </div>
+        </div>
+        {isFiltersOpen && (
+          <div className="filters">
+            <input
+              name="fullName"
+              placeholder="ФИО"
+              value={filters.fullName}
+              onChange={handleFilterChange}
+            />
+            <input
+              name="address"
+              placeholder="Адрес"
+              value={filters.address}
+              onChange={handleFilterChange}
+            />
+            <input
+              name="diagnosis"
+              placeholder="Диагноз"
+              value={filters.diagnosis}
+              onChange={handleFilterChange}
+            />
+            <select
+              name="workerId"
+              value={filters.workerId}
+              onChange={handleFilterChange}
+            >
+              <option value="">Работник</option>
+              {workers.map((worker) => (
+                <option key={worker.id} value={worker.id}>
+                  {worker.fullName}
+                </option>
+              ))}
+            </select>
+            <select
+              name="status"
+              value={filters.status}
+              onChange={handleFilterChange}
+            >
+              <option value="">Статус</option>
+              <option value="NEW">Новый</option>
+              <option value="COMPLETED">Выполнен</option>
+              <option value="CANCELLED">Отменён</option>
+            </select>
+            <input
+              name="ageMin"
+              type="number"
+              min="0"
+              placeholder="Возраст от"
+              value={filters.ageMin}
+              onChange={handleFilterChange}
+            />
+            <input
+              name="ageMax"
+              type="number"
+              min="0"
+              placeholder="Возраст до"
+              value={filters.ageMax}
+              onChange={handleFilterChange}
+            />
+            <input
+              name="createdAt"
+              placeholder="Создан (HH:MM)"
+              value={filters.createdAt}
+              onChange={handleFilterChange}
+            />
+            <input
+              name="statusUpdatedAt"
+              placeholder="Статус изменён (HH:MM)"
+              value={filters.statusUpdatedAt}
+              onChange={handleFilterChange}
+            />
+          </div>
+        )}
         <div className="table">
           <div className="table-row table-head">
             <span>ФИО</span>
@@ -547,18 +812,17 @@ const Dashboard = ({ auth, onLogout }) => {
             <span>Возраст</span>
             <span>Диагноз</span>
             <span>Работник</span>
-            <span>Статус</span>
             <span>Создан</span>
             <span>Статус изменён</span>
-            <span>Действия</span>
+            <span>Статус</span>
           </div>
-          {calls.length === 0 && (
+          {visibleCalls.length === 0 && (
             <div className="table-row empty">Вызовов пока нет</div>
           )}
-          {calls.map((call) => (
+          {visibleCalls.map((call) => (
             <div
               key={call.id}
-              className="table-row clickable"
+              className={`table-row clickable status-border-${call.status.toLowerCase()}`}
               onClick={() => openCall(call.id)}
               role="button"
               tabIndex={0}
@@ -573,32 +837,10 @@ const Dashboard = ({ auth, onLogout }) => {
               <span>{call.age}</span>
               <span>{call.diagnosis}</span>
               <span>{call.assignedWorker?.fullName || "—"}</span>
+              <span>{formatTimeUtcPlus3(call.createdAt)}</span>
+              <span>{formatTimeUtcPlus3(call.statusUpdatedAt)}</span>
               <span className={`status status-${call.status.toLowerCase()}`}>
                 {statusLabels[call.status] || call.status}
-              </span>
-              <span>{formatIso(call.createdAt)}</span>
-              <span>{formatIso(call.statusUpdatedAt)}</span>
-              <span className="actions">
-                <button
-                  type="button"
-                  disabled={call.status !== "NEW"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    updateStatus(call.id, "COMPLETED");
-                  }}
-                >
-                  Выполнен
-                </button>
-                <button
-                  type="button"
-                  disabled={call.status !== "NEW"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    updateStatus(call.id, "CANCELLED");
-                  }}
-                >
-                  Отменён
-                </button>
               </span>
             </div>
           ))}
@@ -645,32 +887,31 @@ const Dashboard = ({ auth, onLogout }) => {
                       selectedCall.status}
                   </div>
                   <div>
-                    <strong>Создан:</strong> {formatIso(selectedCall.createdAt)}
+                    <strong>Создан:</strong>{" "}
+                    {formatTimeUtcPlus3(selectedCall.createdAt)}
                   </div>
                   <div>
                     <strong>Статус изменён:</strong>{" "}
-                    {formatIso(selectedCall.statusUpdatedAt)}
+                    {formatTimeUtcPlus3(selectedCall.statusUpdatedAt)}
                   </div>
                 </div>
 
-                {selectedCall.status === "NEW" && (
-                  <div className="modal-actions">
-                    <button
-                      type="button"
-                      onClick={() => updateStatus(selectedCall.id, "COMPLETED")}
-                    >
-                      Выполнен
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => updateStatus(selectedCall.id, "CANCELLED")}
-                    >
-                      Отменён
-                    </button>
-                  </div>
-                )}
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    onClick={() => updateStatus(selectedCall.id, "COMPLETED")}
+                  >
+                    Выполнен
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateStatus(selectedCall.id, "CANCELLED")}
+                  >
+                    Отменён
+                  </button>
+                </div>
 
-                {isAdmin && selectedCall.status === "NEW" && callEditState && (
+                {isAdmin && callEditState && (
                   <>
                     <h3>Редактирование</h3>
                     <form
@@ -738,6 +979,44 @@ const Dashboard = ({ auth, onLogout }) => {
                         {isSubmitting ? "Сохранение..." : "Сохранить"}
                       </button>
                     </form>
+                  </>
+                )}
+
+                <div className="history-header">
+                  <h3>История изменений</h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsHistoryOpen((prev) => !prev)}
+                  >
+                    {isHistoryOpen ? "Скрыть" : "Показать"}
+                  </button>
+                </div>
+                {isHistoryOpen && (
+                  <>
+                    {historyError && <p className="error">{historyError}</p>}
+                    {callHistory.length === 0 ? (
+                      <p>История пока отсутствует.</p>
+                    ) : (
+                      <div className="history-list scrollable">
+                        {callHistory.map((entry) => (
+                          <div key={entry.id} className="history-item">
+                            <div className="history-meta">
+                              <span>{formatTimeUtcPlus3(entry.createdAt)}</span>
+                              <span>
+                                {entry.changedByUser?.fullName || "Неизвестно"} •{" "}
+                                {entry.changedByUser?.role || "—"}
+                              </span>
+                            </div>
+                            <div className="history-action">
+                              {actionLabels[entry.actionType] || entry.actionType}
+                            </div>
+                            <div className="history-desc">
+                              {describeHistoryEntry(entry)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </>
                 )}
               </>

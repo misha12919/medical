@@ -21,6 +21,12 @@ enum CallStatus {
   CANCELLED
 }
 
+enum CallHistoryAction {
+  CREATE
+  UPDATE_FIELDS
+  STATUS_CHANGE
+}
+
 model User {
   id           Int       @id @default(autoincrement())
   fullName     String
@@ -29,6 +35,7 @@ model User {
   role         UserRole
   createdAt    DateTime  @default(now())
   calls        Call[]
+  histories    CallHistory[]
 }
 
 model Call {
@@ -42,4 +49,17 @@ model Call {
   assignedWorker   User       @relation(fields: [assignedWorkerId], references: [id])
   status           CallStatus @default(NEW)
   statusUpdatedAt  DateTime?
+  histories        CallHistory[]
+}
+
+model CallHistory {
+  id               Int               @id @default(autoincrement())
+  callId           Int
+  call             Call              @relation(fields: [callId], references: [id])
+  changedByUserId  Int
+  changedByUser    User              @relation(fields: [changedByUserId], references: [id])
+  actionType       CallHistoryAction
+  oldValue         Json?
+  newValue         Json?
+  createdAt        DateTime          @default(now())
 }
