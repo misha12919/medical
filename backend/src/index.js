@@ -189,7 +189,7 @@ app.get("/workers", authenticate, requireRole("ADMIN"), async (req, res) => {
   }
 });
 
-app.get("/calls", authenticate, requireRole("ADMIN"), async (req, res) => {
+app.get("/calls", authenticate, requireRole("ADMIN", "WORKER"), async (req, res) => {
   try {
     const calls = await prisma.call.findMany({
       include: { assignedWorker: true },
@@ -215,6 +215,7 @@ app.get("/calls/my", authenticate, requireRole("WORKER"), async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 app.get("/calls/:id", authenticate, async (req, res) => {
   try {
@@ -468,6 +469,52 @@ app.patch(
     }
   }
 );
+
+app.delete("/calls/:id", authenticate, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const callId = parsePositiveInt(req.params.id);
+    if (!callId) {
+      return res.status(400).json({ error: "Invalid call id" });
+    }
+
+    const existingCall = await prisma.call.findUnique({
+      where: { id: callId },
+      include: { assignedWorker: true },
+    });
+
+    if (!existingCall) {
+      return res.status(404).json({ error: "Call not found" });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.callHistory.create({
+        data: {
+          callId: existingCall.id,
+          changedByUserId: req.user.userId,
+          actionType: "DELETE",
+          oldValue: {
+            fullName: existingCall.fullName,
+            address: existingCall.address,
+            age: existingCall.age,
+            diagnosis: existingCall.diagnosis,
+            assignedWorkerId: existingCall.assignedWorkerId,
+            status: existingCall.status,
+            createdAt: existingCall.createdAt,
+            statusUpdatedAt: existingCall.statusUpdatedAt,
+          },
+          newValue: null,
+        },
+      });
+
+      await tx.call.delete({ where: { id: callId } });
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("DELETE /calls/:id error", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 app.get("/calls/:id/history", authenticate, async (req, res) => {
   try {

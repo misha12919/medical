@@ -94,6 +94,12 @@ h2 {
   margin-bottom: 16px;
 }
 
+.filters-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
 label {
   display: flex;
   flex-direction: column;
@@ -124,6 +130,10 @@ button {
 button:disabled {
   background: #9fb3c8;
   cursor: not-allowed;
+}
+
+.button-danger {
+  background: #b91c1c;
 }
 
 .error {
@@ -165,6 +175,21 @@ button:disabled {
 .table-head {
   font-weight: 600;
   background: #e2e8f0;
+}
+
+.table-sort {
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: inherit;
+}
+
+.table-sort:hover {
+  text-decoration: underline;
 }
 
 .table-row.empty {

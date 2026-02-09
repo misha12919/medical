@@ -39,13 +39,14 @@ const actionLabels = {
   CREATE: "Создание вызова",
   UPDATE_FIELDS: "Редактирование данных",
   STATUS_CHANGE: "Изменение статуса",
+  DELETE: "Удаление вызова",
 };
 
 const fieldLabels = {
   fullName: "ФИО",
   address: "Адрес",
   age: "Возраст",
-  diagnosis: "Диагноз",
+  diagnosis: "Симптомы",
   assignedWorkerId: "Работник",
 };
 
@@ -277,6 +278,14 @@ const Dashboard = ({ auth, onLogout }) => {
   const [isCreateFormOpen, setIsCreateFormOpen] = useState(true);
   const [showOnlyNew, setShowOnlyNew] = useState(false);
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [sortConfig, setSortConfig] = useState({
+    key: "createdAt",
+    direction: "desc",
+  });
+  const [isLastCompletedOpen, setIsLastCompletedOpen] = useState(false);
+  const [showAllCalls, setShowAllCalls] = useState(
+    auth.user.role === "ADMIN"
+  );
   const [filters, setFilters] = useState({
     fullName: "",
     address: "",
@@ -310,7 +319,7 @@ const Dashboard = ({ auth, onLogout }) => {
       showOnlyNew ? call.status === "NEW" : true
     );
 
-    return normalized.filter((call) => {
+    const filtered = normalized.filter((call) => {
       if (
         filters.fullName &&
         !call.fullName.toLowerCase().includes(filters.fullName.toLowerCase())
@@ -357,7 +366,78 @@ const Dashboard = ({ auth, onLogout }) => {
       }
       return true;
     });
-  }, [calls, filters, showOnlyNew]);
+
+    const sorted = [...filtered].sort((a, b) => {
+      const { key, direction } = sortConfig;
+      const dir = direction === "asc" ? 1 : -1;
+
+      if (key === "age") {
+        return (a.age - b.age) * dir;
+      }
+      if (key === "createdAt") {
+        return (new Date(a.createdAt) - new Date(b.createdAt)) * dir;
+      }
+      if (key === "statusUpdatedAt") {
+        return (
+          (new Date(a.statusUpdatedAt || 0) -
+            new Date(b.statusUpdatedAt || 0)) *
+          dir
+        );
+      }
+      if (key === "worker") {
+        const aName = a.assignedWorker?.fullName || "";
+        const bName = b.assignedWorker?.fullName || "";
+        return aName.localeCompare(bName, "ru") * dir;
+      }
+      if (key === "status") {
+        return a.status.localeCompare(b.status, "en") * dir;
+      }
+      const aValue = (a[key] || "").toString().toLowerCase();
+      const bValue = (b[key] || "").toString().toLowerCase();
+      return aValue.localeCompare(bValue, "ru") * dir;
+    });
+
+    return sorted;
+  }, [calls, filters, showOnlyNew, sortConfig]);
+
+  const lastCompletedByWorker = useMemo(() => {
+    if (!isAdmin) return [];
+    return workers.map((worker) => {
+      const completedCalls = calls
+        .filter(
+          (call) =>
+            call.assignedWorkerId === worker.id && call.status === "COMPLETED"
+        )
+        .sort((a, b) => {
+          const aTime = new Date(a.statusUpdatedAt || 0).getTime();
+          const bTime = new Date(b.statusUpdatedAt || 0).getTime();
+          return bTime - aTime;
+        });
+
+      const lastCall = completedCalls[0] || null;
+      return {
+        worker,
+        lastCall,
+      };
+    });
+  }, [calls, isAdmin, workers]);
+
+  const toggleSort = (key) => {
+    setSortConfig((prev) => {
+      if (prev.key === key) {
+        return {
+          key,
+          direction: prev.direction === "asc" ? "desc" : "asc",
+        };
+      }
+      return { key, direction: "asc" };
+    });
+  };
+
+  const sortLabel = (key, label) => {
+    if (sortConfig.key !== key) return label;
+    return `${label} ${sortConfig.direction === "asc" ? "▲" : "▼"}`;
+  };
 
   const loadWorkers = async () => {
     const response = await apiFetch("/workers", { token: auth.token });
@@ -368,7 +448,7 @@ const Dashboard = ({ auth, onLogout }) => {
   };
 
   const loadCalls = async () => {
-    const endpoint = isAdmin ? "/calls" : "/calls/my";
+    const endpoint = showAllCalls ? "/calls" : "/calls/my";
     const response = await apiFetch(endpoint, { token: auth.token });
     if (!response.ok) {
       throw new Error("Не удалось загрузить список вызовов");
@@ -392,7 +472,7 @@ const Dashboard = ({ auth, onLogout }) => {
 
   useEffect(() => {
     refreshData();
-  }, []);
+  }, [showAllCalls]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -581,6 +661,32 @@ const Dashboard = ({ auth, onLogout }) => {
     }
   };
 
+  const deleteCall = async () => {
+    if (!selectedCall) return;
+    const confirmed = window.confirm("Удалить вызов без возможности восстановления?");
+    if (!confirmed) return;
+
+    setIsSubmitting(true);
+    try {
+      const response = await apiFetch(`/calls/${selectedCall.id}`, {
+        method: "DELETE",
+        token: auth.token,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось удалить вызов");
+      }
+
+      setCalls((prev) => prev.filter((call) => call.id !== selectedCall.id));
+      closeCall();
+      setError("");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const describeHistoryEntry = (entry) => {
     if (entry.actionType === "STATUS_CHANGE") {
       const oldStatus = entry.oldValue?.status;
@@ -678,7 +784,7 @@ const Dashboard = ({ auth, onLogout }) => {
               />
             </label>
             <label>
-              Диагноз
+              Симптомы
               <input
                 name="diagnosis"
                 value={formState.diagnosis}
@@ -712,10 +818,55 @@ const Dashboard = ({ auth, onLogout }) => {
         </section>
       )}
 
+      {isAdmin && (
+        <section className="card">
+          <div className="section-header">
+            <h2>Последние выполненные вызовы</h2>
+            <button
+              type="button"
+              onClick={() => setIsLastCompletedOpen((prev) => !prev)}
+            >
+              {isLastCompletedOpen ? "Скрыть" : "Показать"}
+            </button>
+          </div>
+          {isLastCompletedOpen && (
+            <div className="table">
+              <div className="table-row table-head">
+                <span>Работник</span>
+                <span>Время выполнения</span>
+                <span>Адрес</span>
+              </div>
+              {lastCompletedByWorker.length === 0 && (
+                <div className="table-row empty">Данных пока нет</div>
+              )}
+              {lastCompletedByWorker.map(({ worker, lastCall }) => (
+                <div key={worker.id} className="table-row">
+                  <span>{worker.fullName}</span>
+                  <span>
+                    {lastCall?.statusUpdatedAt
+                      ? formatTimeUtcPlus3(lastCall.statusUpdatedAt)
+                      : "—"}
+                  </span>
+                  <span>{lastCall?.address || "—"}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="card">
         <div className="section-header">
-          <h2>{isAdmin ? "Все вызовы" : "Мои вызовы"}</h2>
+          <h2>{showAllCalls ? "Все вызовы" : "Мои вызовы"}</h2>
           <div className="section-actions">
+            {isWorker && (
+              <button
+                type="button"
+                onClick={() => setShowAllCalls((prev) => !prev)}
+              >
+                {showAllCalls ? "Показать мои" : "Показать все"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setShowOnlyNew((prev) => !prev)}
@@ -728,93 +879,145 @@ const Dashboard = ({ auth, onLogout }) => {
             >
               {isFiltersOpen ? "Скрыть фильтры" : "Показать фильтры"}
             </button>
-            <button type="button" onClick={resetFilters}>
-              Сбросить фильтры
-            </button>
           </div>
         </div>
         {isFiltersOpen && (
-          <div className="filters">
-            <input
-              name="fullName"
-              placeholder="ФИО"
-              value={filters.fullName}
-              onChange={handleFilterChange}
-            />
-            <input
-              name="address"
-              placeholder="Адрес"
-              value={filters.address}
-              onChange={handleFilterChange}
-            />
-            <input
-              name="diagnosis"
-              placeholder="Диагноз"
-              value={filters.diagnosis}
-              onChange={handleFilterChange}
-            />
-            <select
-              name="workerId"
-              value={filters.workerId}
-              onChange={handleFilterChange}
-            >
-              <option value="">Работник</option>
-              {workers.map((worker) => (
-                <option key={worker.id} value={worker.id}>
-                  {worker.fullName}
-                </option>
-              ))}
-            </select>
-            <select
-              name="status"
-              value={filters.status}
-              onChange={handleFilterChange}
-            >
-              <option value="">Статус</option>
-              <option value="NEW">Новый</option>
-              <option value="COMPLETED">Выполнен</option>
-              <option value="CANCELLED">Отменён</option>
-            </select>
-            <input
-              name="ageMin"
-              type="number"
-              min="0"
-              placeholder="Возраст от"
-              value={filters.ageMin}
-              onChange={handleFilterChange}
-            />
-            <input
-              name="ageMax"
-              type="number"
-              min="0"
-              placeholder="Возраст до"
-              value={filters.ageMax}
-              onChange={handleFilterChange}
-            />
-            <input
-              name="createdAt"
-              placeholder="Создан (HH:MM)"
-              value={filters.createdAt}
-              onChange={handleFilterChange}
-            />
-            <input
-              name="statusUpdatedAt"
-              placeholder="Статус изменён (HH:MM)"
-              value={filters.statusUpdatedAt}
-              onChange={handleFilterChange}
-            />
-          </div>
+          <>
+            <div className="filters">
+              <input
+                name="fullName"
+                placeholder="ФИО"
+                value={filters.fullName}
+                onChange={handleFilterChange}
+              />
+              <input
+                name="address"
+                placeholder="Адрес"
+                value={filters.address}
+                onChange={handleFilterChange}
+              />
+              <input
+                name="diagnosis"
+                placeholder="Симптомы"
+                value={filters.diagnosis}
+                onChange={handleFilterChange}
+              />
+              <select
+                name="workerId"
+                value={filters.workerId}
+                onChange={handleFilterChange}
+              >
+                <option value="">Работник</option>
+                {workers.map((worker) => (
+                  <option key={worker.id} value={worker.id}>
+                    {worker.fullName}
+                  </option>
+                ))}
+              </select>
+              <select
+                name="status"
+                value={filters.status}
+                onChange={handleFilterChange}
+              >
+                <option value="">Статус</option>
+                <option value="NEW">Новый</option>
+                <option value="COMPLETED">Выполнен</option>
+                <option value="CANCELLED">Отменён</option>
+              </select>
+              <input
+                name="ageMin"
+                type="number"
+                min="0"
+                placeholder="Возраст от"
+                value={filters.ageMin}
+                onChange={handleFilterChange}
+              />
+              <input
+                name="ageMax"
+                type="number"
+                min="0"
+                placeholder="Возраст до"
+                value={filters.ageMax}
+                onChange={handleFilterChange}
+              />
+              <input
+                name="createdAt"
+                placeholder="Создан (HH:MM)"
+                value={filters.createdAt}
+                onChange={handleFilterChange}
+              />
+              <input
+                name="statusUpdatedAt"
+                placeholder="Статус изменён (HH:MM)"
+                value={filters.statusUpdatedAt}
+                onChange={handleFilterChange}
+              />
+            </div>
+            <div className="filters-footer">
+              <button type="button" onClick={resetFilters}>
+                Сбросить фильтры
+              </button>
+            </div>
+          </>
         )}
         <div className="table">
           <div className="table-row table-head">
-            <span>ФИО</span>
-            <span>Адрес</span>
-            <span>Возраст</span>
-            <span>Диагноз</span>
-            <span>Работник</span>
-            <span>Создан</span>
-            <span>Статус изменён</span>
-            <span>Статус</span>
+            <button
+              type="button"
+              className="table-sort"
+              onClick={() => toggleSort("fullName")}
+            >
+              {sortLabel("fullName", "ФИО")}
+            </button>
+            <button
+              type="button"
+              className="table-sort"
+              onClick={() => toggleSort("address")}
+            >
+              {sortLabel("address", "Адрес")}
+            </button>
+            <button
+              type="button"
+              className="table-sort"
+              onClick={() => toggleSort("age")}
+            >
+              {sortLabel("age", "Возраст")}
+            </button>
+            <button
+              type="button"
+              className="table-sort"
+              onClick={() => toggleSort("diagnosis")}
+            >
+              {sortLabel("diagnosis", "Симптомы")}
+            </button>
+            <button
+              type="button"
+              className="table-sort"
+              onClick={() => toggleSort("worker")}
+            >
+              {sortLabel("worker", "Работник")}
+            </button>
+            <button
+              type="button"
+              className="table-sort"
+              onClick={() => toggleSort("createdAt")}
+            >
+              {sortLabel("createdAt", "Создан")}
+            </button>
+            <button
+              type="button"
+              className="table-sort"
+              onClick={() => toggleSort("statusUpdatedAt")}
+            >
+              {sortLabel("statusUpdatedAt", "Статус изменён")}
+            </button>
+            <button
+              type="button"
+              className="table-sort"
+              onClick={() => toggleSort("status")}
+            >
+              {sortLabel("status", "Статус")}
+            </button>
           </div>
           {visibleCalls.length === 0 && (
             <div className="table-row empty">Вызовов пока нет</div>
@@ -875,7 +1078,7 @@ const Dashboard = ({ auth, onLogout }) => {
                     <strong>Возраст:</strong> {selectedCall.age}
                   </div>
                   <div>
-                    <strong>Диагноз:</strong> {selectedCall.diagnosis}
+                    <strong>Симптомы:</strong> {selectedCall.diagnosis}
                   </div>
                   <div>
                     <strong>Работник:</strong>{" "}
@@ -909,6 +1112,16 @@ const Dashboard = ({ auth, onLogout }) => {
                   >
                     Отменён
                   </button>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      className="button-danger"
+                      onClick={deleteCall}
+                      disabled={isSubmitting}
+                    >
+                      Удалить
+                    </button>
+                  )}
                 </div>
 
                 {isAdmin && callEditState && (
@@ -951,7 +1164,7 @@ const Dashboard = ({ auth, onLogout }) => {
                         />
                       </label>
                       <label>
-                        Диагноз
+                        Симптомы
                         <input
                           name="diagnosis"
                           value={callEditState.diagnosis}
