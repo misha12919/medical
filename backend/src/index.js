@@ -26,6 +26,19 @@ const parsePositiveInt = (value) => {
   return parsed;
 };
 
+const parseOptionalDate = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+};
+
 const buildFieldChanges = (existingCall, nextValues) => {
   const oldValue = {};
   const newValue = {};
@@ -412,7 +425,11 @@ app.patch(
         return res.status(400).json({ error: "Invalid call id" });
       }
 
-      if (status !== "COMPLETED" && status !== "CANCELLED") {
+      if (
+        status !== "NEW" &&
+        status !== "COMPLETED" &&
+        status !== "CANCELLED"
+      ) {
         return res.status(400).json({ error: "Invalid status" });
       }
 

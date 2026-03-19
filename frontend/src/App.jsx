@@ -1,54 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import CallDetailsModal from "./components/CallDetailsModal";
+import CallsSection from "./components/CallsSection";
+import CreateCallSection from "./components/CreateCallSection";
 import {
-  Link,
-  Navigate,
-  Route,
-  Routes,
-  useNavigate,
-} from "react-router-dom";
+  ApiRequestError,
+  defaultFilters,
+  defaultFormState,
+  fieldLabels,
+  formatTimeUtcPlus3,
+  getAgeFromFormState,
+  getActiveFilterEntries,
+  parseJsonResponse,
+  statusLabels,
+} from "./dashboardUtils";
 
 const API_BASE_URL = "/api";
 const AUTH_STORAGE_KEY = "med_calls_auth";
-
-const defaultFormState = {
-  fullName: "",
-  address: "",
-  age: "",
-  diagnosis: "",
-  assignedWorkerId: "",
-};
-
-const formatTimeUtcPlus3 = (value) => {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const offsetMs = 3 * 60 * 60 * 1000;
-  const adjusted = new Date(date.getTime() + offsetMs);
-  const hours = String(adjusted.getUTCHours()).padStart(2, "0");
-  const minutes = String(adjusted.getUTCMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
-};
-
-const statusLabels = {
-  NEW: "Новый",
-  COMPLETED: "Выполнен",
-  CANCELLED: "Отменён",
-};
-
-const actionLabels = {
-  CREATE: "Создание вызова",
-  UPDATE_FIELDS: "Редактирование данных",
-  STATUS_CHANGE: "Изменение статуса",
-  DELETE: "Удаление вызова",
-};
-
-const fieldLabels = {
-  fullName: "ФИО",
-  address: "Адрес",
-  age: "Возраст",
-  diagnosis: "Симптомы",
-  assignedWorkerId: "Работник",
-};
 
 const readStoredAuth = () => {
   try {
@@ -96,7 +64,7 @@ const AuthRedirect = ({ auth, children }) => {
   return children;
 };
 
-const LoginPage = ({ onAuth }) => {
+const LoginPage = ({ authMessage, onAuth }) => {
   const navigate = useNavigate();
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
@@ -136,6 +104,7 @@ const LoginPage = ({ onAuth }) => {
         <p>Введите данные учетной записи.</p>
       </header>
       <section className="card">
+        {authMessage && <p className="notice">{authMessage}</p>}
         <form className="form" onSubmit={handleSubmit}>
           <label>
             Email
@@ -170,7 +139,7 @@ const LoginPage = ({ onAuth }) => {
   );
 };
 
-const RegisterPage = ({ onAuth }) => {
+const RegisterPage = ({ authMessage, onAuth }) => {
   const navigate = useNavigate();
   const [form, setForm] = useState({
     fullName: "",
@@ -215,6 +184,7 @@ const RegisterPage = ({ onAuth }) => {
         <p>Создайте учетную запись с нужной ролью.</p>
       </header>
       <section className="card">
+        {authMessage && <p className="notice">{authMessage}</p>}
         <form className="form" onSubmit={handleSubmit}>
           <label>
             ФИО
@@ -270,49 +240,86 @@ const Dashboard = ({ auth, onLogout }) => {
   const [calls, setCalls] = useState([]);
   const [formState, setFormState] = useState(defaultFormState);
   const [selectedCall, setSelectedCall] = useState(null);
-  const [isCallLoading, setIsCallLoading] = useState(false);
+  const [isDashboardLoading, setIsDashboardLoading] = useState(true);
+  const [isWorkersLoading, setIsWorkersLoading] = useState(false);
+  const [isListRefreshing, setIsListRefreshing] = useState(false);
+  const [isModalLoading, setIsModalLoading] = useState(false);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [callEditState, setCallEditState] = useState(null);
   const [callHistory, setCallHistory] = useState([]);
+  const [listError, setListError] = useState("");
+  const [createError, setCreateError] = useState("");
+  const [modalError, setModalError] = useState("");
   const [historyError, setHistoryError] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isCreateFormOpen, setIsCreateFormOpen] = useState(true);
   const [showOnlyNew, setShowOnlyNew] = useState(false);
-  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
   const [sortConfig, setSortConfig] = useState({
     key: "createdAt",
     direction: "desc",
   });
-  const [isLastCompletedOpen, setIsLastCompletedOpen] = useState(false);
+  const [isLastCompletedOpen, setIsLastCompletedOpen] = useState(
+    auth.user.role === "ADMIN"
+  );
   const [showAllCalls, setShowAllCalls] = useState(
     auth.user.role === "ADMIN"
   );
-  const [filters, setFilters] = useState({
-    fullName: "",
-    address: "",
-    diagnosis: "",
-    workerId: "",
-    status: "",
-    ageMin: "",
-    ageMax: "",
-    createdAt: "",
-    statusUpdatedAt: "",
-  });
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState("");
+  const [filters, setFilters] = useState(defaultFilters);
+  const [isCreateSubmitting, setIsCreateSubmitting] = useState(false);
+  const [isModalSubmitting, setIsModalSubmitting] = useState(false);
 
   const isAdmin = auth.user.role === "ADMIN";
   const isWorker = auth.user.role === "WORKER";
+  const derivedCreateAge = useMemo(
+    () => getAgeFromFormState(formState),
+    [formState]
+  );
+
+  const buildCallEditState = (call) => ({
+    fullName: call.fullName,
+    address: call.address,
+    age: call.age,
+    diagnosis: call.diagnosis,
+    assignedWorkerId: call.assignedWorkerId,
+  });
 
   const isFormValid = useMemo(() => {
     if (!isAdmin) return false;
-    return (
+    return Boolean(
       formState.fullName.trim() &&
       formState.address.trim() &&
       formState.diagnosis.trim() &&
-      Number(formState.age) > 0 &&
+      derivedCreateAge > 0 &&
       Number(formState.assignedWorkerId) > 0
     );
-  }, [formState, isAdmin]);
+  }, [derivedCreateAge, formState, isAdmin]);
+
+  const isCallEditValid = useMemo(() => {
+    if (!callEditState) return false;
+    return Boolean(
+      callEditState.fullName.trim() &&
+      callEditState.address.trim() &&
+      callEditState.diagnosis.trim() &&
+      Number(callEditState.age) > 0 &&
+      Number(callEditState.assignedWorkerId) > 0
+    );
+  }, [callEditState]);
+
+  const hasUnsavedCallChanges = useMemo(() => {
+    if (!selectedCall || !callEditState || !isAdmin) {
+      return false;
+    }
+
+    return (
+      selectedCall.fullName !== callEditState.fullName ||
+      selectedCall.address !== callEditState.address ||
+      selectedCall.diagnosis !== callEditState.diagnosis ||
+      Number(selectedCall.age) !== Number(callEditState.age) ||
+      Number(selectedCall.assignedWorkerId) !==
+        Number(callEditState.assignedWorkerId)
+    );
+  }, [callEditState, isAdmin, selectedCall]);
 
   const visibleCalls = useMemo(() => {
     const normalized = calls.filter((call) =>
@@ -400,6 +407,11 @@ const Dashboard = ({ auth, onLogout }) => {
     return sorted;
   }, [calls, filters, showOnlyNew, sortConfig]);
 
+  const activeFilterEntries = useMemo(
+    () => getActiveFilterEntries({ filters, showOnlyNew, workers }),
+    [filters, showOnlyNew, workers]
+  );
+
   const lastCompletedByWorker = useMemo(() => {
     if (!isAdmin) return [];
     return workers.map((worker) => {
@@ -422,6 +434,43 @@ const Dashboard = ({ auth, onLogout }) => {
     });
   }, [calls, isAdmin, workers]);
 
+  const dashboardSummary = useMemo(() => {
+    const total = calls.length;
+    const newCount = calls.filter((call) => call.status === "NEW").length;
+    const completedCount = calls.filter(
+      (call) => call.status === "COMPLETED"
+    ).length;
+    const cancelledCount = calls.filter(
+      (call) => call.status === "CANCELLED"
+    ).length;
+
+    return {
+      total,
+      newCount,
+      completedCount,
+      cancelledCount,
+      workersCount: workers.length,
+      visibleCount: visibleCalls.length,
+      activeFilterCount: activeFilterEntries.length,
+    };
+  }, [activeFilterEntries.length, calls, visibleCalls.length, workers.length]);
+
+  const visibleCallHistory = useMemo(
+    () =>
+      callHistory.filter((entry) => {
+        if (entry.actionType !== "UPDATE_FIELDS") {
+          return true;
+        }
+
+        const changedFields = Object.keys(entry.newValue || {}).filter(
+          (field) => field !== "createdAt" && field !== "statusUpdatedAt"
+        );
+
+        return changedFields.length > 0;
+      }),
+    [callHistory]
+  );
+
   const toggleSort = (key) => {
     setSortConfig((prev) => {
       if (prev.key === key) {
@@ -434,48 +483,104 @@ const Dashboard = ({ auth, onLogout }) => {
     });
   };
 
-  const sortLabel = (key, label) => {
-    if (sortConfig.key !== key) return label;
-    return `${label} ${sortConfig.direction === "asc" ? "▲" : "▼"}`;
-  };
-
   const loadWorkers = async () => {
     const response = await apiFetch("/workers", { token: auth.token });
-    if (!response.ok) {
-      throw new Error("Не удалось загрузить список работников");
-    }
-    return response.json();
+    return parseJsonResponse(response, {
+      default: "Не удалось загрузить список работников.",
+    });
   };
 
   const loadCalls = async () => {
     const endpoint = showAllCalls ? "/calls" : "/calls/my";
     const response = await apiFetch(endpoint, { token: auth.token });
-    if (!response.ok) {
-      throw new Error("Не удалось загрузить список вызовов");
-    }
-    return response.json();
+    return parseJsonResponse(response, {
+      default: "Не удалось загрузить список вызовов.",
+      forbidden:
+        isWorker && showAllCalls
+          ? "Полный список вызовов недоступен для вашей роли. Переключитесь на режим \"Мои вызовы\"."
+          : "Недостаточно прав для просмотра списка вызовов.",
+    });
   };
 
-  const refreshData = async () => {
-    try {
-      const [workersData, callsData] = await Promise.all([
-        isAdmin ? loadWorkers() : Promise.resolve([]),
-        loadCalls(),
-      ]);
-      setWorkers(workersData);
-      setCalls(callsData);
-      setError("");
-    } catch (loadError) {
-      setError(loadError.message);
+  const handleRequestFailure = (requestError, setErrorState) => {
+    const message =
+      requestError?.message || "Не удалось выполнить запрос. Попробуйте снова.";
+
+    if (requestError instanceof ApiRequestError && requestError.status === 401) {
+      onLogout(message);
+      return true;
     }
+
+    setErrorState(message);
+    return false;
+  };
+
+  const closeCall = () => {
+    setSelectedCall(null);
+    setCallEditState(null);
+    setCallHistory([]);
+    setHistoryError("");
+    setModalError("");
+    setIsHistoryOpen(false);
+  };
+
+  const handleMissingCall = (callId, message) => {
+    setCalls((prev) => prev.filter((call) => call.id !== callId));
+    if (selectedCall?.id === callId) {
+      closeCall();
+    }
+    setListError(message);
+  };
+
+  const refreshData = async ({ initial = false } = {}) => {
+    if (initial) {
+      setIsDashboardLoading(true);
+    } else {
+      setIsListRefreshing(true);
+    }
+
+    setListError("");
+
+    const callsPromise = loadCalls()
+      .then((callsData) => {
+        setCalls(callsData);
+      })
+      .catch((loadError) => {
+        handleRequestFailure(loadError, setListError);
+      });
+
+    if (isAdmin) {
+      setIsWorkersLoading(true);
+      setCreateError("");
+
+      await Promise.all([
+        callsPromise,
+        loadWorkers()
+          .then((workersData) => {
+            setWorkers(workersData);
+          })
+          .catch((loadError) => {
+            handleRequestFailure(loadError, setCreateError);
+          })
+          .finally(() => {
+            setIsWorkersLoading(false);
+          }),
+      ]);
+    } else {
+      await callsPromise;
+    }
+
+    setIsDashboardLoading(false);
+    setIsListRefreshing(false);
   };
 
   useEffect(() => {
-    refreshData();
+    refreshData({ initial: true });
   }, [showAllCalls]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
+    setCreateError("");
     setFormState((prev) => ({ ...prev, [name]: value }));
   };
 
@@ -485,28 +590,20 @@ const Dashboard = ({ auth, onLogout }) => {
   };
 
   const resetFilters = () => {
-    setFilters({
-      fullName: "",
-      address: "",
-      diagnosis: "",
-      workerId: "",
-      status: "",
-      ageMin: "",
-      ageMax: "",
-      createdAt: "",
-      statusUpdatedAt: "",
-    });
+    setFilters(defaultFilters);
   };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!isFormValid) {
-      setError("Заполните все поля корректно");
+      setCreateError(
+        "Заполните все поля корректно и укажите только возраст или только год рождения."
+      );
       return;
     }
 
-    setIsSubmitting(true);
-    setError("");
+    setIsCreateSubmitting(true);
+    setCreateError("");
     try {
       const response = await apiFetch("/calls", {
         method: "POST",
@@ -514,37 +611,40 @@ const Dashboard = ({ auth, onLogout }) => {
         body: JSON.stringify({
           fullName: formState.fullName,
           address: formState.address,
-          age: Number(formState.age),
+          age: derivedCreateAge,
           diagnosis: formState.diagnosis,
           assignedWorkerId: Number(formState.assignedWorkerId),
         }),
       });
 
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || "Не удалось создать вызов");
-      }
+      await parseJsonResponse(response, {
+        default: "Не удалось создать вызов.",
+        forbidden: "Создавать вызовы может только администратор.",
+      });
 
       setFormState(defaultFormState);
       await refreshData();
     } catch (submitError) {
-      setError(submitError.message);
+      handleRequestFailure(submitError, setCreateError);
     } finally {
-      setIsSubmitting(false);
+      setIsCreateSubmitting(false);
     }
   };
 
   const updateStatus = async (callId, status) => {
+    setIsModalSubmitting(true);
+    setModalError("");
     try {
       const response = await apiFetch(`/calls/${callId}/status`, {
         method: "PATCH",
         token: auth.token,
         body: JSON.stringify({ status }),
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || "Не удалось обновить статус");
-      }
+      const payload = await parseJsonResponse(response, {
+        default: "Не удалось обновить статус вызова.",
+        forbidden: "У вас нет доступа к изменению статуса этого вызова.",
+        notFound: "Вызов не найден: возможно, он уже был удалён.",
+      });
 
       setCalls((prev) =>
         prev.map((call) => (call.id === payload.id ? payload : call))
@@ -553,84 +653,122 @@ const Dashboard = ({ auth, onLogout }) => {
       if (selectedCall?.id === callId) {
         await loadHistory(callId);
       }
-      setError("");
     } catch (updateError) {
-      setError(updateError.message);
+      if (updateError instanceof ApiRequestError && updateError.status === 404) {
+        handleMissingCall(callId, updateError.message);
+      } else {
+        handleRequestFailure(updateError, setModalError);
+      }
+    } finally {
+      setIsModalSubmitting(false);
     }
   };
 
   const loadHistory = async (callId) => {
+    setIsHistoryLoading(true);
+    setHistoryError("");
     try {
       const response = await apiFetch(`/calls/${callId}/history`, {
         token: auth.token,
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || "Не удалось загрузить историю");
-      }
+      const payload = await parseJsonResponse(response, {
+        default: "Не удалось загрузить историю изменений.",
+        forbidden: "История этого вызова недоступна для вашей роли.",
+        notFound: "История недоступна: вызов уже удалён.",
+      });
       setCallHistory(payload);
-      setHistoryError("");
+      return payload;
     } catch (loadError) {
-      setHistoryError(loadError.message);
+      if (loadError instanceof ApiRequestError && loadError.status === 404) {
+        handleMissingCall(callId, loadError.message);
+      } else {
+        handleRequestFailure(loadError, setHistoryError);
+      }
+      setCallHistory([]);
+      return [];
+    } finally {
+      setIsHistoryLoading(false);
     }
   };
 
   const openCall = async (callId) => {
-    // Fetch full call details for the modal card
-    setIsCallLoading(true);
+    const previewCall = calls.find((call) => call.id === callId) || null;
+    setSelectedCall(previewCall);
+    setCallEditState(null);
+    setCallHistory([]);
+    setHistoryError("");
+    setModalError("");
+    setIsHistoryOpen(false);
+    setIsModalLoading(true);
     try {
       const response = await apiFetch(`/calls/${callId}`, {
         token: auth.token,
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || "Не удалось загрузить вызов");
-      }
-      setSelectedCall(payload);
-      setCallEditState({
-        fullName: payload.fullName,
-        address: payload.address,
-        age: payload.age,
-        diagnosis: payload.diagnosis,
-        assignedWorkerId: payload.assignedWorkerId,
+      const payload = await parseJsonResponse(response, {
+        default: "Не удалось загрузить карточку вызова.",
+        forbidden: "У вас нет доступа к этой карточке вызова.",
+        notFound: "Вызов не найден: возможно, он уже был удалён.",
       });
+      setSelectedCall(payload);
+      setCallEditState(buildCallEditState(payload));
       await loadHistory(callId);
       setIsHistoryOpen(false);
-      setError("");
     } catch (loadError) {
-      setError(loadError.message);
+      if (loadError instanceof ApiRequestError && loadError.status === 404) {
+        handleMissingCall(callId, loadError.message);
+      } else if (
+        loadError instanceof ApiRequestError &&
+        loadError.status === 403
+      ) {
+        closeCall();
+        setListError(loadError.message);
+      } else {
+        closeCall();
+        handleRequestFailure(loadError, setListError);
+      }
     } finally {
-      setIsCallLoading(false);
+      setIsModalLoading(false);
     }
   };
 
-  const closeCall = () => {
-    setSelectedCall(null);
-    setCallEditState(null);
-    setCallHistory([]);
-    setHistoryError("");
-    setIsHistoryOpen(false);
+  const requestCloseCall = () => {
+    if (isModalSubmitting) {
+      setModalError("Дождитесь завершения текущего действия, чтобы закрыть карточку.");
+      return;
+    }
+
+    if (hasUnsavedCallChanges) {
+      const confirmed = window.confirm(
+        "Закрыть карточку и потерять несохранённые изменения?"
+      );
+
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    closeCall();
   };
 
   const handleCallEditChange = (event) => {
     const { name, value } = event.target;
+    setModalError("");
     setCallEditState((prev) => ({ ...prev, [name]: value }));
   };
 
   const saveCallEdits = async () => {
     if (!selectedCall) return;
-    if (
-      !callEditState.fullName.trim() ||
-      !callEditState.address.trim() ||
-      !callEditState.diagnosis.trim() ||
-      Number(callEditState.age) <= 0 ||
-      Number(callEditState.assignedWorkerId) <= 0
-    ) {
-      setError("Заполните все поля корректно");
+    if (!isCallEditValid) {
+      setModalError("Заполните все поля корректно.");
+      return;
+    }
+    if (!hasUnsavedCallChanges) {
+      setModalError("Изменений для сохранения нет.");
       return;
     }
 
-    setIsSubmitting(true);
+    setIsModalSubmitting(true);
+    setModalError("");
     try {
       const response = await apiFetch(`/calls/${selectedCall.id}`, {
         method: "PATCH",
@@ -643,21 +781,26 @@ const Dashboard = ({ auth, onLogout }) => {
           assignedWorkerId: Number(callEditState.assignedWorkerId),
         }),
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || "Не удалось сохранить изменения");
-      }
+      const payload = await parseJsonResponse(response, {
+        default: "Не удалось сохранить изменения вызова.",
+        forbidden: "Редактирование вызова недоступно для вашей роли.",
+        notFound: "Вызов не найден: возможно, он уже был удалён.",
+      });
 
       setCalls((prev) =>
         prev.map((call) => (call.id === payload.id ? payload : call))
       );
       setSelectedCall(payload);
+      setCallEditState(buildCallEditState(payload));
       await loadHistory(payload.id);
-      setError("");
     } catch (saveError) {
-      setError(saveError.message);
+      if (saveError instanceof ApiRequestError && saveError.status === 404) {
+        handleMissingCall(selectedCall.id, saveError.message);
+      } else {
+        handleRequestFailure(saveError, setModalError);
+      }
     } finally {
-      setIsSubmitting(false);
+      setIsModalSubmitting(false);
     }
   };
 
@@ -666,24 +809,29 @@ const Dashboard = ({ auth, onLogout }) => {
     const confirmed = window.confirm("Удалить вызов без возможности восстановления?");
     if (!confirmed) return;
 
-    setIsSubmitting(true);
+    setIsModalSubmitting(true);
+    setModalError("");
     try {
       const response = await apiFetch(`/calls/${selectedCall.id}`, {
         method: "DELETE",
         token: auth.token,
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error || "Не удалось удалить вызов");
-      }
+      await parseJsonResponse(response, {
+        default: "Не удалось удалить вызов.",
+        forbidden: "Удалять вызовы может только администратор.",
+        notFound: "Вызов уже удалён или больше не существует.",
+      });
 
       setCalls((prev) => prev.filter((call) => call.id !== selectedCall.id));
       closeCall();
-      setError("");
     } catch (deleteError) {
-      setError(deleteError.message);
+      if (deleteError instanceof ApiRequestError && deleteError.status === 404) {
+        handleMissingCall(selectedCall.id, deleteError.message);
+      } else {
+        handleRequestFailure(deleteError, setModalError);
+      }
     } finally {
-      setIsSubmitting(false);
+      setIsModalSubmitting(false);
     }
   };
 
@@ -697,7 +845,9 @@ const Dashboard = ({ auth, onLogout }) => {
     }
 
     if (entry.actionType === "UPDATE_FIELDS") {
-      const changedFields = Object.keys(entry.newValue || {});
+      const changedFields = Object.keys(entry.newValue || {}).filter(
+        (field) => field !== "createdAt" && field !== "statusUpdatedAt"
+      );
       if (changedFields.length === 0) return "Изменены данные вызова";
       return changedFields
         .map((field) => {
@@ -727,7 +877,7 @@ const Dashboard = ({ auth, onLogout }) => {
               {auth.user.fullName} • {auth.user.role}
             </p>
           </div>
-          <button type="button" onClick={onLogout}>
+          <button type="button" onClick={() => onLogout()}>
             Выйти
           </button>
         </div>
@@ -738,84 +888,99 @@ const Dashboard = ({ auth, onLogout }) => {
         </p>
       </header>
 
-      {isAdmin && (
-        <section className="card">
-          <div className="section-header">
-            <h2>Создать вызов</h2>
-            <button
-              type="button"
-              onClick={() => setIsCreateFormOpen((prev) => !prev)}
-            >
-              {isCreateFormOpen ? "Скрыть" : "Показать"}
-            </button>
+      <section className="card card-hero">
+        <div className="hero-layout">
+          <div className="hero-copy">
+            <span className="eyebrow">
+              {isAdmin ? "Оперативный центр" : "Рабочая панель"}
+            </span>
+            <h2 className="hero-title">
+              {isAdmin
+                ? "Контроль обращений, статусов и назначений"
+                : "Фокус на назначенных вам вызовах"}
+            </h2>
+            <p className="hero-text">
+              {isAdmin
+                ? "Сводка помогает быстро оценить текущую нагрузку и состояние потока обращений."
+                : "Панель собрана так, чтобы быстрее ориентироваться в актуальных задачах и истории изменений."}
+            </p>
+            <div className="hero-badges">
+              <span className="hero-badge">Роль: {auth.user.role}</span>
+              <span className="hero-badge">
+                Видимость: {showAllCalls ? "Все вызовы" : "Мои вызовы"}
+              </span>
+              <span className="hero-badge">
+                Активных фильтров: {dashboardSummary.activeFilterCount}
+              </span>
+            </div>
           </div>
-          {isCreateFormOpen && (
-            <form className="form" onSubmit={handleSubmit}>
-            <label>
-              ФИО пациента
-              <input
-                name="fullName"
-                value={formState.fullName}
-                onChange={handleChange}
-                placeholder="Иванов Иван Иванович"
-                required
-              />
-            </label>
-            <label>
-              Адрес
-              <input
-                name="address"
-                value={formState.address}
-                onChange={handleChange}
-                placeholder="г. Москва, ул. Пример, 10"
-                required
-              />
-            </label>
-            <label>
-              Возраст
-              <input
-                name="age"
-                type="number"
-                min="1"
-                value={formState.age}
-                onChange={handleChange}
-                placeholder="45"
-                required
-              />
-            </label>
-            <label>
-              Симптомы
-              <input
-                name="diagnosis"
-                value={formState.diagnosis}
-                onChange={handleChange}
-                placeholder="Гипертонический криз"
-                required
-              />
-            </label>
-            <label>
-              Работник
-              <select
-                name="assignedWorkerId"
-                value={formState.assignedWorkerId}
-                onChange={handleChange}
-                required
-              >
-                <option value="">Выберите работника</option>
-                {workers.map((worker) => (
-                  <option key={worker.id} value={worker.id}>
-                    {worker.fullName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button type="submit" disabled={!isFormValid || isSubmitting}>
-              {isSubmitting ? "Создание..." : "Создать вызов"}
-            </button>
-            </form>
-          )}
-          {error && <p className="error">{error}</p>}
-        </section>
+
+          <div className="summary-grid" aria-label="Оперативная сводка">
+            <article className="summary-card summary-card-primary">
+              <span className="summary-label">Всего записей</span>
+              <strong>{dashboardSummary.total}</strong>
+              <span className="summary-meta">
+                Сейчас видно: {dashboardSummary.visibleCount}
+              </span>
+            </article>
+            <article className="summary-card summary-card-new">
+              <span className="summary-label">Новые</span>
+              <strong>{dashboardSummary.newCount}</strong>
+              <span className="summary-meta">Приоритет обработки</span>
+            </article>
+            <article className="summary-card summary-card-completed">
+              <span className="summary-label">Выполненные</span>
+              <strong>{dashboardSummary.completedCount}</strong>
+              <span className="summary-meta">Закрытые обращения</span>
+            </article>
+            <article className="summary-card summary-card-cancelled">
+              <span className="summary-label">Отменённые</span>
+              <strong>{dashboardSummary.cancelledCount}</strong>
+              <span className="summary-meta">Неактуальные записи</span>
+            </article>
+            {isAdmin && (
+              <article className="summary-card">
+                <span className="summary-label">Работники</span>
+                <strong>{dashboardSummary.workersCount}</strong>
+                <span className="summary-meta">Доступно для назначения</span>
+              </article>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="dashboard-band">
+        <div className="dashboard-band-card">
+          <span className="dashboard-band-title">Статус-палитра</span>
+          <div className="status-legend">
+            <span className="status-pill status-pill-new">Новые</span>
+            <span className="status-pill status-pill-completed">Выполненные</span>
+            <span className="status-pill status-pill-cancelled">Отменённые</span>
+          </div>
+        </div>
+        <div className="dashboard-band-card">
+          <span className="dashboard-band-title">Текущий режим</span>
+          <p className="dashboard-band-text">
+            {showOnlyNew
+              ? "Включён упор на новые обращения."
+              : "Показан полный поток доступных обращений."}
+          </p>
+        </div>
+      </section>
+
+      {isAdmin && (
+        <CreateCallSection
+          error={createError}
+          formState={formState}
+          isFormOpen={isCreateFormOpen}
+          isFormValid={isFormValid}
+          isSubmitting={isCreateSubmitting}
+          isWorkersLoading={isWorkersLoading}
+          onChange={handleChange}
+          onSubmit={handleSubmit}
+          onToggle={() => setIsCreateFormOpen((prev) => !prev)}
+          workers={workers}
+        />
       )}
 
       {isAdmin && (
@@ -830,8 +995,12 @@ const Dashboard = ({ auth, onLogout }) => {
             </button>
           </div>
           {isLastCompletedOpen && (
-            <div className="table">
-              <div className="table-row table-head">
+            <div
+              className="table table-compact"
+              role="table"
+              aria-label="Последние выполненные вызовы"
+            >
+              <div className="table-row table-head" role="row">
                 <span>Работник</span>
                 <span>Время выполнения</span>
                 <span>Адрес</span>
@@ -841,13 +1010,13 @@ const Dashboard = ({ auth, onLogout }) => {
               )}
               {lastCompletedByWorker.map(({ worker, lastCall }) => (
                 <div key={worker.id} className="table-row">
-                  <span>{worker.fullName}</span>
-                  <span>
+                  <span data-label="Работник">{worker.fullName}</span>
+                  <span data-label="Время выполнения">
                     {lastCall?.statusUpdatedAt
                       ? formatTimeUtcPlus3(lastCall.statusUpdatedAt)
                       : "—"}
                   </span>
-                  <span>{lastCall?.address || "—"}</span>
+                  <span data-label="Адрес">{lastCall?.address || "—"}</span>
                 </div>
               ))}
             </div>
@@ -855,388 +1024,51 @@ const Dashboard = ({ auth, onLogout }) => {
         </section>
       )}
 
-      <section className="card">
-        <div className="section-header">
-          <h2>{showAllCalls ? "Все вызовы" : "Мои вызовы"}</h2>
-          <div className="section-actions">
-            {isWorker && (
-              <button
-                type="button"
-                onClick={() => setShowAllCalls((prev) => !prev)}
-              >
-                {showAllCalls ? "Показать мои" : "Показать все"}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setShowOnlyNew((prev) => !prev)}
-            >
-              {showOnlyNew ? "Показать все" : "Только новые"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsFiltersOpen((prev) => !prev)}
-            >
-              {isFiltersOpen ? "Скрыть фильтры" : "Показать фильтры"}
-            </button>
-          </div>
-        </div>
-        {isFiltersOpen && (
-          <>
-            <div className="filters">
-              <input
-                name="fullName"
-                placeholder="ФИО"
-                value={filters.fullName}
-                onChange={handleFilterChange}
-              />
-              <input
-                name="address"
-                placeholder="Адрес"
-                value={filters.address}
-                onChange={handleFilterChange}
-              />
-              <input
-                name="diagnosis"
-                placeholder="Симптомы"
-                value={filters.diagnosis}
-                onChange={handleFilterChange}
-              />
-              <select
-                name="workerId"
-                value={filters.workerId}
-                onChange={handleFilterChange}
-              >
-                <option value="">Работник</option>
-                {workers.map((worker) => (
-                  <option key={worker.id} value={worker.id}>
-                    {worker.fullName}
-                  </option>
-                ))}
-              </select>
-              <select
-                name="status"
-                value={filters.status}
-                onChange={handleFilterChange}
-              >
-                <option value="">Статус</option>
-                <option value="NEW">Новый</option>
-                <option value="COMPLETED">Выполнен</option>
-                <option value="CANCELLED">Отменён</option>
-              </select>
-              <input
-                name="ageMin"
-                type="number"
-                min="0"
-                placeholder="Возраст от"
-                value={filters.ageMin}
-                onChange={handleFilterChange}
-              />
-              <input
-                name="ageMax"
-                type="number"
-                min="0"
-                placeholder="Возраст до"
-                value={filters.ageMax}
-                onChange={handleFilterChange}
-              />
-              <input
-                name="createdAt"
-                placeholder="Создан (HH:MM)"
-                value={filters.createdAt}
-                onChange={handleFilterChange}
-              />
-              <input
-                name="statusUpdatedAt"
-                placeholder="Статус изменён (HH:MM)"
-                value={filters.statusUpdatedAt}
-                onChange={handleFilterChange}
-              />
-            </div>
-            <div className="filters-footer">
-              <button type="button" onClick={resetFilters}>
-                Сбросить фильтры
-              </button>
-            </div>
-          </>
-        )}
-        <div className="table">
-          <div className="table-row table-head">
-            <button
-              type="button"
-              className="table-sort"
-              onClick={() => toggleSort("fullName")}
-            >
-              {sortLabel("fullName", "ФИО")}
-            </button>
-            <button
-              type="button"
-              className="table-sort"
-              onClick={() => toggleSort("address")}
-            >
-              {sortLabel("address", "Адрес")}
-            </button>
-            <button
-              type="button"
-              className="table-sort"
-              onClick={() => toggleSort("age")}
-            >
-              {sortLabel("age", "Возраст")}
-            </button>
-            <button
-              type="button"
-              className="table-sort"
-              onClick={() => toggleSort("diagnosis")}
-            >
-              {sortLabel("diagnosis", "Симптомы")}
-            </button>
-            <button
-              type="button"
-              className="table-sort"
-              onClick={() => toggleSort("worker")}
-            >
-              {sortLabel("worker", "Работник")}
-            </button>
-            <button
-              type="button"
-              className="table-sort"
-              onClick={() => toggleSort("createdAt")}
-            >
-              {sortLabel("createdAt", "Создан")}
-            </button>
-            <button
-              type="button"
-              className="table-sort"
-              onClick={() => toggleSort("statusUpdatedAt")}
-            >
-              {sortLabel("statusUpdatedAt", "Статус изменён")}
-            </button>
-            <button
-              type="button"
-              className="table-sort"
-              onClick={() => toggleSort("status")}
-            >
-              {sortLabel("status", "Статус")}
-            </button>
-          </div>
-          {visibleCalls.length === 0 && (
-            <div className="table-row empty">Вызовов пока нет</div>
-          )}
-          {visibleCalls.map((call) => (
-            <div
-              key={call.id}
-              className={`table-row clickable status-border-${call.status.toLowerCase()}`}
-              onClick={() => openCall(call.id)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  openCall(call.id);
-                }
-              }}
-            >
-              <span>{call.fullName}</span>
-              <span>{call.address}</span>
-              <span>{call.age}</span>
-              <span>{call.diagnosis}</span>
-              <span>{call.assignedWorker?.fullName || "—"}</span>
-              <span>{formatTimeUtcPlus3(call.createdAt)}</span>
-              <span>{formatTimeUtcPlus3(call.statusUpdatedAt)}</span>
-              <span className={`status status-${call.status.toLowerCase()}`}>
-                {statusLabels[call.status] || call.status}
-              </span>
-            </div>
-          ))}
-        </div>
-        {error && !isAdmin && <p className="error">{error}</p>}
-      </section>
+      <CallsSection
+        activeFilterEntries={activeFilterEntries}
+        calls={visibleCalls}
+        error={listError}
+        filters={filters}
+        isFiltersOpen={isFiltersOpen}
+        isInitialLoading={isDashboardLoading}
+        isRefreshing={isListRefreshing}
+        isWorker={isWorker}
+        onFilterChange={handleFilterChange}
+        onOpenCall={openCall}
+        onResetFilters={resetFilters}
+        onToggleFilters={() => setIsFiltersOpen((prev) => !prev)}
+        onToggleOnlyNew={() => setShowOnlyNew((prev) => !prev)}
+        onToggleShowAllCalls={() => setShowAllCalls((prev) => !prev)}
+        onToggleSort={toggleSort}
+        showAllCalls={showAllCalls}
+        showOnlyNew={showOnlyNew}
+        sortConfig={sortConfig}
+        workers={workers}
+      />
 
       {selectedCall && (
-        <div className="modal-backdrop" onClick={closeCall}>
-          <div
-            className="modal"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <header className="modal-header">
-              <h2>Карточка вызова</h2>
-              <button type="button" onClick={closeCall}>
-                Закрыть
-              </button>
-            </header>
-            {isCallLoading ? (
-              <p>Загрузка...</p>
-            ) : (
-              <>
-                <div className="modal-grid">
-                  <div>
-                    <strong>ФИО:</strong> {selectedCall.fullName}
-                  </div>
-                  <div>
-                    <strong>Адрес:</strong> {selectedCall.address}
-                  </div>
-                  <div>
-                    <strong>Возраст:</strong> {selectedCall.age}
-                  </div>
-                  <div>
-                    <strong>Симптомы:</strong> {selectedCall.diagnosis}
-                  </div>
-                  <div>
-                    <strong>Работник:</strong>{" "}
-                    {selectedCall.assignedWorker?.fullName || "—"}
-                  </div>
-                  <div>
-                    <strong>Статус:</strong>{" "}
-                    {statusLabels[selectedCall.status] ||
-                      selectedCall.status}
-                  </div>
-                  <div>
-                    <strong>Создан:</strong>{" "}
-                    {formatTimeUtcPlus3(selectedCall.createdAt)}
-                  </div>
-                  <div>
-                    <strong>Статус изменён:</strong>{" "}
-                    {formatTimeUtcPlus3(selectedCall.statusUpdatedAt)}
-                  </div>
-                </div>
-
-                <div className="modal-actions">
-                  <button
-                    type="button"
-                    onClick={() => updateStatus(selectedCall.id, "COMPLETED")}
-                  >
-                    Выполнен
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => updateStatus(selectedCall.id, "CANCELLED")}
-                  >
-                    Отменён
-                  </button>
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      className="button-danger"
-                      onClick={deleteCall}
-                      disabled={isSubmitting}
-                    >
-                      Удалить
-                    </button>
-                  )}
-                </div>
-
-                {isAdmin && callEditState && (
-                  <>
-                    <h3>Редактирование</h3>
-                    <form
-                      className="form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        saveCallEdits();
-                      }}
-                    >
-                      <label>
-                        ФИО пациента
-                        <input
-                          name="fullName"
-                          value={callEditState.fullName}
-                          onChange={handleCallEditChange}
-                          required
-                        />
-                      </label>
-                      <label>
-                        Адрес
-                        <input
-                          name="address"
-                          value={callEditState.address}
-                          onChange={handleCallEditChange}
-                          required
-                        />
-                      </label>
-                      <label>
-                        Возраст
-                        <input
-                          name="age"
-                          type="number"
-                          min="1"
-                          value={callEditState.age}
-                          onChange={handleCallEditChange}
-                          required
-                        />
-                      </label>
-                      <label>
-                        Симптомы
-                        <input
-                          name="diagnosis"
-                          value={callEditState.diagnosis}
-                          onChange={handleCallEditChange}
-                          required
-                        />
-                      </label>
-                      <label>
-                        Работник
-                        <select
-                          name="assignedWorkerId"
-                          value={callEditState.assignedWorkerId}
-                          onChange={handleCallEditChange}
-                          required
-                        >
-                          <option value="">Выберите работника</option>
-                          {workers.map((worker) => (
-                            <option key={worker.id} value={worker.id}>
-                              {worker.fullName}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <button type="submit" disabled={isSubmitting}>
-                        {isSubmitting ? "Сохранение..." : "Сохранить"}
-                      </button>
-                    </form>
-                  </>
-                )}
-
-                <div className="history-header">
-                  <h3>История изменений</h3>
-                  <button
-                    type="button"
-                    onClick={() => setIsHistoryOpen((prev) => !prev)}
-                  >
-                    {isHistoryOpen ? "Скрыть" : "Показать"}
-                  </button>
-                </div>
-                {isHistoryOpen && (
-                  <>
-                    {historyError && <p className="error">{historyError}</p>}
-                    {callHistory.length === 0 ? (
-                      <p>История пока отсутствует.</p>
-                    ) : (
-                      <div className="history-list scrollable">
-                        {callHistory.map((entry) => (
-                          <div key={entry.id} className="history-item">
-                            <div className="history-meta">
-                              <span>{formatTimeUtcPlus3(entry.createdAt)}</span>
-                              <span>
-                                {entry.changedByUser?.fullName || "Неизвестно"} •{" "}
-                                {entry.changedByUser?.role || "—"}
-                              </span>
-                            </div>
-                            <div className="history-action">
-                              {actionLabels[entry.actionType] || entry.actionType}
-                            </div>
-                            <div className="history-desc">
-                              {describeHistoryEntry(entry)}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-              </>
-            )}
-            {error && <p className="error">{error}</p>}
-          </div>
-        </div>
+        <CallDetailsModal
+          callEditState={callEditState}
+          callHistory={visibleCallHistory}
+          describeHistoryEntry={describeHistoryEntry}
+          hasUnsavedChanges={hasUnsavedCallChanges}
+          historyError={historyError}
+          isAdmin={isAdmin}
+          isBusy={isModalSubmitting}
+          isEditValid={isCallEditValid}
+          isHistoryLoading={isHistoryLoading}
+          isHistoryOpen={isHistoryOpen}
+          isLoading={isModalLoading}
+          modalError={modalError}
+          onCallEditChange={handleCallEditChange}
+          onClose={requestCloseCall}
+          onDelete={deleteCall}
+          onSave={saveCallEdits}
+          onStatusChange={updateStatus}
+          onToggleHistory={() => setIsHistoryOpen((prev) => !prev)}
+          selectedCall={selectedCall}
+          workers={workers}
+        />
       )}
     </div>
   );
@@ -1244,15 +1076,18 @@ const Dashboard = ({ auth, onLogout }) => {
 
 export default function App() {
   const [auth, setAuth] = useState(() => readStoredAuth());
+  const [authMessage, setAuthMessage] = useState("");
 
   const handleAuth = (payload) => {
     const authPayload = { token: payload.token, user: payload.user };
     saveStoredAuth(authPayload);
+    setAuthMessage("");
     setAuth(authPayload);
   };
 
-  const handleLogout = () => {
+  const handleLogout = (message = "") => {
     clearStoredAuth();
+    setAuthMessage(message);
     setAuth(null);
   };
 
@@ -1266,7 +1101,7 @@ export default function App() {
         path="/login"
         element={
           <AuthRedirect auth={auth}>
-            <LoginPage onAuth={handleAuth} />
+            <LoginPage authMessage={authMessage} onAuth={handleAuth} />
           </AuthRedirect>
         }
       />
@@ -1274,7 +1109,7 @@ export default function App() {
         path="/register"
         element={
           <AuthRedirect auth={auth}>
-            <RegisterPage onAuth={handleAuth} />
+            <RegisterPage authMessage={authMessage} onAuth={handleAuth} />
           </AuthRedirect>
         }
       />
